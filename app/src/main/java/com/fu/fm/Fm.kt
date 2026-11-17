@@ -197,6 +197,16 @@ object Fm {
         md.digest().joinToString("") { "%02x".format(it) }
     } catch (e: Exception) { null }
 
+    /** Fast mode: same size + same date (din). Content check nahi hota. */
+    fun findDuplicatesFast(items: List<Item>): List<List<Item>> {
+        val fmt = SimpleDateFormat("yyyyMMdd", Locale.US)
+        return items.filter { it.size > 0 }
+            .groupBy { "${it.size}|${fmt.format(Date(it.mtime))}" }
+            .values.filter { it.size > 1 }
+            .map { g -> g.sortedBy { it.mtime } }
+            .sortedByDescending { it[0].size * it.size }
+    }
+
     /** Size match -> pehle 256KB hash -> phir full hash. Har group oldest-first. */
     fun findDuplicates(items: List<Item>): List<List<Item>> {
         val out = ArrayList<List<Item>>()

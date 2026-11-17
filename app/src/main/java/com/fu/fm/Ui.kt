@@ -374,12 +374,13 @@ fun Browser(vm: VM, open: (List<Item>, Item) -> Unit, onVisible: (List<String>) 
 @Composable
 fun Tools(vm: VM, pick: (String, (File) -> Unit) -> Unit, confirm: (String, () -> Unit) -> Unit) {
     var modeDir by remember { mutableStateOf<File?>(null) }
+    var dupAsk by remember { mutableStateOf(false) }
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(12.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         ToolCard("Duplicate finder", "Same file alag naam se — dhoond kar delete karo", Icons.Default.ContentCopy) {
-            vm.findDupes()
+            dupAsk = true
         }
         ToolCard("Sort by Format / Date / Month", "Folder ki files subfolders mai arrange", Icons.Default.SortByAlpha) {
             pick("Sort karne wala folder") { modeDir = it }
@@ -399,6 +400,24 @@ fun Tools(vm: VM, pick: (String, (File) -> Unit) -> Unit, confirm: (String, () -
         ToolCard("Clean junk", ".tmp files, thumbnails, khali folders", Icons.Default.CleaningServices) {
             confirm("Temp aur thumbnail files delete hongi. Theek hai?") { vm.clean() }
         }
+    }
+    if (dupAsk) {
+        AlertDialog(
+            onDismissRequest = { dupAsk = false },
+            title = { Text("Duplicate kaise dhoondun?") },
+            text = {
+                Column {
+                    TextButton(onClick = { dupAsk = false; vm.findDupes(true) }) {
+                        Text("Fast: same size + same date")
+                    }
+                    TextButton(onClick = { dupAsk = false; vm.findDupes(false) }) {
+                        Text("Exact: poora content match (slow)")
+                    }
+                }
+            },
+            confirmButton = {},
+            dismissButton = { TextButton(onClick = { dupAsk = false }) { Text("Cancel") } }
+        )
     }
     modeDir?.let { d ->
         AlertDialog(

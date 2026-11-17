@@ -119,10 +119,11 @@ class VM(app: Application) : AndroidViewModel(app) {
         "${fmtSize(b)} saaf, $n empty folders delete"
     }
 
-    fun findDupes() {
+    fun findDupes(fast: Boolean) {
         viewModelScope.launch {
+            progDone = 0; progTotal = 0; progName = ""
             busy = true
-            val r = withContext(Dispatchers.IO) { Fm.findDuplicates(items) }
+            val r = withContext(Dispatchers.IO) { if (fast) Fm.findDuplicatesFast(items) else Fm.findDuplicates(items) }
             busy = false
             if (r.isEmpty()) message = "Koi duplicate nahi mila" else dupes = r
         }
