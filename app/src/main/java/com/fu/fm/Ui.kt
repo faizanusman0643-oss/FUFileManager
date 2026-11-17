@@ -141,6 +141,12 @@ fun App(vm: VM, loader: ImageLoader, extUri: Uri?, onExtClose: () -> Unit) {
                                         val l = sel.toList()
                                         picker = "Copy to…" to { d: File -> vm.move(l, d, true) }
                                     })
+                                    if (sel.size == 1 && sel[0].lowercase().endsWith(".m3u8")) {
+                                        DropdownMenuItem(text = { Text("Convert to MP4") }, onClick = {
+                                            menu = false
+                                            vm.convert(File(sel[0]))
+                                        })
+                                    }
                                     DropdownMenuItem(text = { Text("Share") }, onClick = {
                                         menu = false
                                         shareFiles(ctx, sel.map { File(it) })

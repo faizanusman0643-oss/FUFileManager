@@ -119,6 +119,20 @@ class VM(app: Application) : AndroidViewModel(app) {
         "${fmtSize(b)} saaf, $n empty folders delete"
     }
 
+    fun convert(playlist: File) {
+        val parent = playlist.parentFile ?: return
+        val out = Fm.unique(parent.parentFile ?: parent, parent.name + ".mp4")
+        selected.clear()
+        progDone = 0; progTotal = 100; progName = "Convert: ${parent.name}"
+        busy = true
+        Convert.toMp4(ctx, playlist, out, { p -> progDone = p }) { ok, err ->
+            busy = false
+            message = if (ok) "MP4 ban gayi: ${out.name}" else "Convert fail: $err"
+            if (ok) Fm.rescan(ctx, listOf(out.absolutePath))
+            refresh()
+        }
+    }
+
     fun findDupes(fast: Boolean) {
         viewModelScope.launch {
             progDone = 0; progTotal = 0; progName = ""
