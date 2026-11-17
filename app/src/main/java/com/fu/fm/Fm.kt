@@ -16,11 +16,20 @@ data class Moved(val from: File, val to: File)
 object Fm {
     val root: File get() = Environment.getExternalStorageDirectory()
 
+    /** .m3u8 / .mpd wale folder (HLS/DASH) ek unit hain: segments ke saath hi move hone chahiye. */
+    private val BUNDLE_EXT = setOf("m3u8", "mpd")
+    fun isBundle(d: File): Boolean =
+        d.isDirectory && (d.listFiles()?.any { it.isFile && it.extension.lowercase() in BUNDLE_EXT } == true)
+
     /** Poori storage scan (hidden folders aur Android/ skip). */
     fun scan(): List<Item> {
         val out = ArrayList<Item>()
         fun walk(d: File, top: Boolean) {
             val list = d.listFiles() ?: return
+            if (!top && list.any { it.isFile && it.extension.lowercase() in BUNDLE_EXT }) {
+                list.filter { it.isFile && it.extension.lowercase() in BUNDLE_EXT }.forEach { out.add(it.toItem()) }
+                return
+            }
             for (f in list) {
                 if (f.name.startsWith(".")) continue
                 if (f.isDirectory) {
@@ -67,15 +76,20 @@ object Fm {
     ): List<Moved> {
         destDir.mkdirs()
         val res = ArrayList<Moved>()
-        for ((i, f) in files.withIndex()) {
-            onProgress(i, files.size, f.name)
+        val units = files.map { f ->
+            val p = f.parentFile
+            if (f.isFile && f.extension.lowercase() in BUNDLE_EXT && p != null &&
+                p.absolutePath != root.absolutePath && isBundle(p)) p else f
+        }.distinct()
+        for ((i, f) in units.withIndex()) {
+            onProgress(i, units.size, f.name)
             if (!f.exists()) continue
             if (f.isDirectory && (destDir.absolutePath + "/").startsWith(f.absolutePath + "/")) continue
             val t = unique(destDir, f.name)
             val ok = if (copy) copyAny(f, t) else moveFile(f, t)
             if (ok) res.add(Moved(f, t))
         }
-        onProgress(files.size, files.size, "")
+        onProgress(units.size, units.size, "")
         return res
     }
 
@@ -105,6 +119,7 @@ object Fm {
         val fmtM = SimpleDateFormat("MM-MMMM-yyyy", Locale.ENGLISH)
         val shift = 8 * 3600_000L
         val res = ArrayList<Moved>()
+        if (isBundle(dir)) return res
         val files = (dir.listFiles() ?: return res).filter { it.isFile && !it.name.startsWith(".") }
         for ((i, f) in files.withIndex()) {
             onProgress(i, files.size, f.name)
@@ -131,9 +146,19 @@ object Fm {
         dest.mkdirs()
         val destPrefix = dest.absolutePath + "/"
         val res = ArrayList<Moved>()
-        val files = src.walkTopDown()
-            .filter { it.isFile && !it.absolutePath.startsWith(destPrefix) && !it.name.startsWith(".") }
-            .toList()
+        val files = ArrayList<File>()
+        fun collect(d: File) {
+            val list = d.listFiles() ?: return
+            for (c in list) {
+                if (c.name.startsWith(".")) continue
+                val ap = c.absolutePath
+                if (ap.startsWith(destPrefix) || ap + "/" == destPrefix) continue
+                if (c.isDirectory) {
+                    if (isBundle(c)) files.add(c) else collect(c)
+                } else files.add(c)
+            }
+        }
+        collect(src)
         for ((i, f) in files.withIndex()) {
             onProgress(i, files.size, f.name)
             val t = unique(dest, f.name)
