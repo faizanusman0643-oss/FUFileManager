@@ -186,7 +186,31 @@ fun App(vm: VM, loader: ImageLoader, extUri: Uri?, onExtClose: () -> Unit) {
                     2 -> Tools(vm, { t, cb -> picker = t to cb }, { m, a -> confirm = m to a })
                     else -> VaultScreen(vm)
                 }
-                if (vm.busy) CircularProgressIndicator(Modifier.align(Alignment.Center))
+                if (vm.busy) {
+                    Box(
+                        Modifier.fillMaxSize().background(Color(0x66000000))
+                            .combinedClickable(onClick = {}),
+                        Alignment.Center
+                    ) {
+                        Card(Modifier.padding(32.dp).fillMaxWidth()) {
+                            Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                Text("Kaam ho raha hai…", fontSize = 16.sp)
+                                if (vm.progTotal > 0) {
+                                    LinearProgressIndicator(
+                                        progress = { vm.progDone.toFloat() / vm.progTotal },
+                                        modifier = Modifier.fillMaxWidth()
+                                    )
+                                    Text("${vm.progDone} / ${vm.progTotal}", fontSize = 13.sp)
+                                } else {
+                                    LinearProgressIndicator(Modifier.fillMaxWidth())
+                                }
+                                if (vm.progName.isNotEmpty()) {
+                                    Text(vm.progName, fontSize = 12.sp, color = Color.Gray, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
 

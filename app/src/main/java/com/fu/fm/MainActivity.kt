@@ -41,6 +41,11 @@ class VM(app: Application) : AndroidViewModel(app) {
     var vaultOpen by mutableStateOf(false)
     var dupes by mutableStateOf<List<List<Item>>?>(null)
     val selected = mutableStateListOf<String>()
+    var progDone by mutableIntStateOf(0)
+    var progTotal by mutableIntStateOf(0)
+    var progName by mutableStateOf("")
+
+    private val onProg: (Int, Int, String) -> Unit = { d, t, n -> progDone = d; progTotal = t; progName = n }
 
     private val ctx get() = getApplication<Application>()
 
@@ -55,6 +60,7 @@ class VM(app: Application) : AndroidViewModel(app) {
 
     fun op(work: () -> String) {
         viewModelScope.launch {
+            progDone = 0; progTotal = 0; progName = ""
             busy = true
             val r = withContext(Dispatchers.IO) {
                 try { work() } catch (e: Exception) { "Error: ${e.message}" }
@@ -72,13 +78,13 @@ class VM(app: Application) : AndroidViewModel(app) {
         Fm.rescan(ctx, m.flatMap { listOf(it.from.absolutePath, it.to.absolutePath) })
 
     fun delete(paths: List<String>) = op {
-        val done = Fm.deleteAll(paths.map { File(it) })
+        val done = Fm.deleteAll(paths.map { File(it) }, onProg)
         Fm.rescan(ctx, done)
         "${done.size} delete hue"
     }
 
     fun move(paths: List<String>, dest: File, copy: Boolean) = op {
-        val r = Fm.moveAll(paths.map { File(it) }, dest, copy)
+        val r = Fm.moveAll(paths.map { File(it) }, dest, copy, onProg)
         rescan(r)
         "${r.size} ${if (copy) "copy" else "move"} hue"
     }
@@ -95,15 +101,15 @@ class VM(app: Application) : AndroidViewModel(app) {
     fun restore(names: List<String>) = op { "${Vault.restore(names)} wapas aa gaye" }
 
     fun sort(dir: File, mode: SortMode) = op {
-        val r = Fm.sortFolder(dir, mode)
+        val r = Fm.sortFolder(dir, mode, onProg)
         rescan(r)
         "${r.size} files sort hui"
     }
 
     fun consolidate(src: File, dst: File) = op {
-        val r = Fm.consolidate(src, dst)
+        val (r, empties) = Fm.consolidate(src, dst, onProg)
         rescan(r)
-        "${r.size} files ek jagah aa gayi"
+        "${r.size} files ek jagah aa gayi, $empties khali folders delete hue"
     }
 
     fun emptyDirs(dir: File) = op { "${Fm.deleteEmptyDirs(dir)} empty folders delete hue" }

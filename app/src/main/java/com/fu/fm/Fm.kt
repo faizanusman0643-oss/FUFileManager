@@ -61,22 +61,34 @@ object Fm {
         return ok
     }
 
-    fun moveAll(files: List<File>, destDir: File, copy: Boolean = false): List<Moved> {
+    fun moveAll(
+        files: List<File>, destDir: File, copy: Boolean = false,
+        onProgress: (Int, Int, String) -> Unit = { _, _, _ -> }
+    ): List<Moved> {
         destDir.mkdirs()
         val res = ArrayList<Moved>()
-        for (f in files) {
+        for ((i, f) in files.withIndex()) {
+            onProgress(i, files.size, f.name)
             if (!f.exists()) continue
             if (f.isDirectory && (destDir.absolutePath + "/").startsWith(f.absolutePath + "/")) continue
             val t = unique(destDir, f.name)
             val ok = if (copy) copyAny(f, t) else moveFile(f, t)
             if (ok) res.add(Moved(f, t))
         }
+        onProgress(files.size, files.size, "")
         return res
     }
 
-    fun deleteAll(files: List<File>): List<String> {
+    fun deleteAll(
+        files: List<File>,
+        onProgress: (Int, Int, String) -> Unit = { _, _, _ -> }
+    ): List<String> {
         val done = ArrayList<String>()
-        for (f in files) if (f.deleteRecursively()) done.add(f.absolutePath)
+        for ((i, f) in files.withIndex()) {
+            onProgress(i, files.size, f.name)
+            if (f.deleteRecursively()) done.add(f.absolutePath)
+        }
+        onProgress(files.size, files.size, "")
         return done
     }
 
@@ -85,14 +97,17 @@ object Fm {
     }
 
     // ---------- Sort (bat: By Format / Date / Month, 8am cutoff) ----------
-    fun sortFolder(dir: File, mode: SortMode): List<Moved> {
+    fun sortFolder(
+        dir: File, mode: SortMode,
+        onProgress: (Int, Int, String) -> Unit = { _, _, _ -> }
+    ): List<Moved> {
         val fmtD = SimpleDateFormat("yyyy-MM-dd", Locale.US)
         val fmtM = SimpleDateFormat("MM-MMMM-yyyy", Locale.ENGLISH)
         val shift = 8 * 3600_000L
         val res = ArrayList<Moved>()
-        val files = dir.listFiles() ?: return res
-        for (f in files) {
-            if (!f.isFile || f.name.startsWith(".")) continue
+        val files = (dir.listFiles() ?: return res).filter { it.isFile && !it.name.startsWith(".") }
+        for ((i, f) in files.withIndex()) {
+            onProgress(i, files.size, f.name)
             val folder = when (mode) {
                 SortMode.FORMAT -> {
                     val e = f.extension.uppercase()
@@ -104,23 +119,29 @@ object Fm {
             val t = unique(File(dir, folder), f.name)
             if (moveFile(f, t)) res.add(Moved(f, t))
         }
+        onProgress(files.size, files.size, "")
         return res
     }
 
     // ---------- Consolidate (bat: Reverse Data) ----------
-    fun consolidate(src: File, dest: File): List<Moved> {
+    fun consolidate(
+        src: File, dest: File,
+        onProgress: (Int, Int, String) -> Unit = { _, _, _ -> }
+    ): Pair<List<Moved>, Int> {
         dest.mkdirs()
         val destPrefix = dest.absolutePath + "/"
         val res = ArrayList<Moved>()
         val files = src.walkTopDown()
             .filter { it.isFile && !it.absolutePath.startsWith(destPrefix) && !it.name.startsWith(".") }
             .toList()
-        for (f in files) {
+        for ((i, f) in files.withIndex()) {
+            onProgress(i, files.size, f.name)
             val t = unique(dest, f.name)
             if (moveFile(f, t)) res.add(Moved(f, t))
         }
-        deleteEmptyDirs(src)
-        return res
+        onProgress(files.size, files.size, "Khali folders hata raha hai…")
+        val empties = deleteEmptyDirs(src)
+        return res to empties
     }
 
     fun deleteEmptyDirs(dir: File): Int {
