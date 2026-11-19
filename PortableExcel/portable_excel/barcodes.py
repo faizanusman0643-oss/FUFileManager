@@ -3,6 +3,24 @@
 Bars are rendered from the module patterns of python-barcode (1-D codes) and
 segno (QR) with Pillow: integer module widths, no anti-aliasing, white
 background.  Data Matrix is not offered: no pure-Python encoder is installed.
+
+Code 128 (and "isbt128", which is Code 128 with ISBT 128 data-identifier
+checks) is encoded by our own encoder: the data is kept exactly as given
+(e.g. "=%6200", "&>0262352359") and code sets A/B/C are chosen by dynamic
+programming for the fewest symbols (code set C for digit runs).  The text
+under the bars is exactly the encoded data.
+
+Sheet.images barcode dicts get these runtime keys in addition to the
+model.py schema (fileio does not need to save them):
+    last_value  the data last rendered (str), or ("#error", reason) when the
+                source could not be read; refresh_barcodes() compares the
+                source cell's current value with it to skip unchanged codes.
+    error       None, or the reason the data could not be encoded; the image
+                then shows a red "Invalid barcode: <reason>" placeholder.
+    warning     None, or non-blocking remarks (e.g. unknown ISBT 128 data
+                identifier); the barcode is still rendered.
+    din_check   (isbt128 only) bool: draw the ISO 7064 MOD 37-2 DIN check
+                character in a box after the human-readable DIN. Off by default.
 """
 from __future__ import annotations
 

@@ -744,9 +744,12 @@ class BatchBarcodeDialog(QDialog):
 
     def default_output_col(self, rng) -> int:
         r1, c1, r2, c2 = rng
-        cells = self.win.book.active.cells
+        sheet = self.win.book.active
+        cells = sheet.cells
+        img_cols = {int(im.get("col", -1)) for im in sheet.images
+                    if r1 <= int(im.get("row", -1)) <= r2}
         c = c2 + 1
-        while any((r, c) in cells for r in range(r1, min(r2, r1 + 5000) + 1)):
+        while c in img_cols or any((r, c) in cells for r in range(r1, min(r2, r1 + 5000) + 1)):
             c += 1
         return c
 

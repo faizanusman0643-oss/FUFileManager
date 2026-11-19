@@ -18,10 +18,11 @@ sys.path.insert(0, ROOT)
 OUT = os.path.join(ROOT, "screenshots")
 
 USED_STUBS = []
-for _name in ("engine", "vba"):
+for _name in ("engine", "vba", "barcodes"):
     try:
         _m = importlib.import_module(f"portable_excel.{_name}")
-        needed = "FormulaEngine" if _name == "engine" else "VBARuntime"
+        needed = {"engine": "FormulaEngine", "vba": "VBARuntime",
+                  "barcodes": "make_barcode_image"}[_name]
         if not hasattr(_m, needed):
             raise ImportError(f"{_name} lacks {needed}")
     except Exception:
@@ -394,6 +395,67 @@ def userform_shots(win):
     uwin.close()
 
 
+ISBT_ROWS = [
+    ("=PK0262601234400", "=%6200", "=<E0212V00", "&>0262352359", "F-10231"),
+    ("=PK0262601234500", "=%5100", "=<E0212V00", "&>0262352359", "F-10232"),
+    ("=PK0262601234600", "=%9500", "=<E0336V00", "&>0262352359", "F-10240"),
+    ("=PK0262601234700", "=%7300", "=<E0212V00", "&>0262362359", "F-10244"),
+    ("=PK0262601234800", "=%8400", "=<E0336V00", "&>0262362359", "F-10251"),
+    ("=PK0262601234900", "=%0600", "=<E0212V00", "&>0262372359", "F-10257"),
+]
+
+
+def isbt_book():
+    book = Workbook()
+    sh = book.active
+    sh.name = "Labels"
+    heads = ["DIN NO", "GROUP", "CODE", "EXPIRY", "FILE NO", "DIN BARCODE"]
+    for c, h in enumerate(heads):
+        sh.set_raw(0, c, h)
+        sh.update_style(0, c, bold=True, fill="#217346", color="#FFFFFF", align="center")
+    for r, row in enumerate(ISBT_ROWS, start=1):
+        for c, v in enumerate(row):
+            sh.set_raw(r, c, ("'" + v) if v[0] in "=&" else v)
+    sh.col_widths.update({0: 150, 1: 70, 2: 100, 3: 110, 4: 70})
+    book._pe_title = "BloodBankLabels.xlsx"
+    return book
+
+
+def barcode_shots():
+    from portable_excel.gui.images import barcodes_module
+    if barcodes_module() is None:
+        print("  barcodes module missing - skipping 25-27")
+        return
+    bwin = new_window(isbt_book())
+    bwin.ribbon.show_page("Insert")
+    # 25 single barcode dialog, linked to A2
+    bwin.view.goto(1, 0)
+    d = bwin.barcode_dialog(modal=False)
+    d.target.setText("F2")
+    d.update_preview()
+    dialog_shot(bwin, d, "25_barcode_dialog")
+    # 26 one DIN barcode per row + a QR code
+    bwin.view.select_range(1, 0, len(ISBT_ROWS), 0)
+    bwin.generate_barcodes({"range": (1, 0, len(ISBT_ROWS), 0), "symbology": "code128",
+                            "out_col": 5, "show_text": True, "module_px": 1,
+                            "bar_height_px": 34, "fit": True, "linked": True})
+    qr = bwin.insert_barcode({"symbology": "qr", "source": "A2", "text": "", "show_text": False,
+                              "module_px": 3, "bar_height_px": 60, "row": 1, "col": 7})
+    sheet = bwin.book.active
+    bwin.images.select(sheet.images[2]["id"])
+    bwin.ribbon.show_page("Insert")
+    pump(5)
+    save(bwin.grab(), "26_barcodes_in_sheet")
+    # 27 batch dialog over a selected range (GROUP column)
+    bwin.images.select(None)
+    bwin.ribbon.show_page("Data")
+    bwin.view.select_range(1, 1, len(ISBT_ROWS), 1)
+    d = bwin.batch_barcodes_dialog(modal=False)
+    dialog_shot(bwin, d, "27_batch_barcodes")
+    bwin.modified = False
+    bwin.close()
+
+
 def main():
     os.makedirs(OUT, exist_ok=True)
     app = create_app(["screenshots"])
@@ -595,6 +657,7 @@ def main():
     dialog_shot(win, d, "20_save_warnings")
 
     userform_shots(win)
+    barcode_shots()
 
     for w in (win, mwin, rwin):
         w.modified = False

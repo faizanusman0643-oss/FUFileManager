@@ -322,3 +322,92 @@ End Sub'''}])
     img = sh.images[0]
     assert (img["row"], img["col"]) == (2, 2)
     assert decode_code128(png_row_modules(img["data"], 2)[0]) == "ITEM-2"
+
+
+# --------------------------------------------------------------------------
+# ISBT 128 (blood bank labels) — Code 128 with exact data
+# --------------------------------------------------------------------------
+ISBT_SAMPLES = ["=%6200", "=<E0212V00", "=PK0262601234400", "&>0262352359"]
+
+
+def text_of_png(png, mp):
+    """Human-readable band present below the bars (non-white pixels)."""
+    img = Image.open(io.BytesIO(png)).convert("L")
+    w, h = img.size
+    return any(img.getpixel((x, y)) < 128 for y in range(mp * 2 + 61, h) for x in range(w))
+
+
+@pytest.mark.parametrize("data", ISBT_SAMPLES)
+@pytest.mark.parametrize("sym", ["code128", "isbt128"])
+def test_isbt_strings_encode_exactly(sym, data):
+    assert B.validate(sym, data) is None
+    assert B.normalize(sym, data) == data
+    assert B.human_text(sym, data) == data
+    png, w, h = B.render_png(sym, data, module_px=2)
+    mods, ql, qr = png_row_modules(png, 2)
+    assert decode_code128(mods) == data
+    assert text_of_png(png, 2)
+
+
+def test_isbt_uses_code_set_c_optimally():
+    vals = B.code128_values("=PK0262601234400")
+    # start B, "=PK0" in B, switch to C, then six digit pairs, checksum
+    assert vals[0] == 104
+    assert vals[1:5] == [ord(c) - 32 for c in "=PK0"]
+    assert vals[5] == 99
+    assert vals[6:12] == [26, 26, 1, 23, 44, 0]
+    assert len(vals) == 13
+    assert B.code128_values("&>0262352359")[3] == 99
+    # an all-digit even string starts directly in code set C
+    assert B.code128_values("123456")[0] == 105 and len(B.code128_values("123456")) == 5
+
+
+def test_isbt_validation_and_warnings():
+    assert B.SYMBOLOGIES["isbt128"] == "ISBT 128 (Code 128)"
+    assert B.validate("isbt128", "6200").startswith("ISBT 128 data must start")
+    assert B.validate("isbt128", "=").startswith("ISBT 128 data must start")
+    for d in ISBT_SAMPLES:
+        assert B.warnings("isbt128", d) == []
+    assert B.isbt_identifier("=%6200")[1] == "ABO/Rh blood group"
+    assert B.isbt_identifier("=PK0262601234400")[1] == "Donation identification number"
+    w = B.warnings("isbt128", "=@123")
+    assert w == ["Unknown ISBT 128 data identifier '=@'"]
+    assert B.validate("isbt128", "=@123") is None          # warning only, still renders
+    mods, _, _ = png_row_modules(B.render_png("isbt128", "=@123")[0], 2)
+    assert decode_code128(mods) == "=@123"
+    assert B.warnings("isbt128", "=%62") == ["ISBT 128 abo/rh blood group should have 6 characters (has 4)"]
+
+
+def test_din_check_character_iso7064():
+    alphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ*"
+    body = "PK02626012344"
+    c = B.din_check_character("=PK0262601234400")
+    assert c == B.iso7064_mod37_2(body)
+    # ISO 7064 MOD 37-2 property: sum(v_i * 2^(n-i+1)) + check == 1 (mod 37)
+    n = len(body)
+    total = sum(alphabet.index(ch) * pow(2, n - i, 37) for i, ch in enumerate(body))
+    assert (total + alphabet.index(c)) % 37 == 1
+    assert B.din_check_character("=%6200") is None
+    png_plain = B.render_png("isbt128", "=PK0262601234400")[0]
+    png_box = B.render_png("isbt128", "=PK0262601234400", din_check=True)[0]
+    assert png_plain != png_box
+    # bars are identical with or without the check box
+    assert png_row_modules(png_plain, 2)[0] == png_row_modules(png_box, 2)[0]
+
+
+def test_isbt_from_xlookup_formula_cells():
+    book, eng, sh = make_book()
+    book.set_cell(sh, 1, 6, "A+")
+    book.set_cell(sh, 1, 0, '=IFERROR(_xlfn.XLOOKUP(G2,{"A+","B+"},{"=%6200","=%7300"}),"")')
+    img = B.make_barcode_image(sh, "A2", None, "isbt128", engine=eng, row=1, col=1)
+    assert img["barcode"]["error"] is None and img["barcode"]["warning"] is None
+    assert decode_code128(png_row_modules(img["data"], 2)[0]) == "=%6200"
+    sh.images.append(img)
+    book.set_cell(sh, 1, 6, "B+")
+    eng.invalidate()
+    assert B.refresh_barcodes(book, eng) == [img]
+    assert decode_code128(png_row_modules(img["data"], 2)[0]) == "=%7300"
+    book.set_cell(sh, 1, 6, "?")          # XLOOKUP misses -> "" -> no data
+    eng.invalidate()
+    B.refresh_barcodes(book, eng)
+    assert img["barcode"]["error"] == "No data to encode"
