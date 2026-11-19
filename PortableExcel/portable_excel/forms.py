@@ -33,7 +33,8 @@ defaults from CONTROL_DEFAULTS / COMMON_DEFAULTS)::
     multi_line, password_char, max_length, scroll_bars                  (TextBox)
     default, cancel, accelerator                                       (CommandButton)
     group_name                                                         (OptionButton)
-    list (list of str), list_index, column_count, column_widths,
+    list (rows: str, or list of values for multi-column lists), list_index,
+    selected (list of bool per row, multi-select ListBox), column_count, column_widths,
     bound_column, row_source, multi_select (0 single, 1 multi, 2 extended),
     style (ComboBox: 0 dropdown combo, 2 dropdown list), list_style     (ComboBox/ListBox)
     min, max, small_change, large_change, orientation                  (SpinButton/ScrollBar)
@@ -78,11 +79,11 @@ CONTROL_DEFAULTS = {
                      "group_name": "", "back_style": 0},
     "ToggleButton": {"width": 72.0, "height": 24.0, "value": False, "text_align": 2},
     "ComboBox": {"width": 72.0, "height": 18.0, "value": "", "list": [],
-                 "list_index": -1, "column_count": 1, "column_widths": "",
+                 "list_index": -1, "selected": [], "column_count": 1, "column_widths": "",
                  "bound_column": 1, "row_source": None, "style": 0,
                  "list_style": 0, "match_required": False},
     "ListBox": {"width": 72.0, "height": 72.0, "value": None, "list": [],
-                "list_index": -1, "column_count": 1, "column_widths": "",
+                "list_index": -1, "selected": [], "column_count": 1, "column_widths": "",
                 "bound_column": 1, "row_source": None, "multi_select": 0,
                 "list_style": 0},
     "Frame": {"width": 144.0, "height": 72.0, "caption": "Frame"},
@@ -102,6 +103,7 @@ CONTROL_DEFAULTS = {
 
 FORM_DEFAULTS = {
     "caption": "UserForm1", "width": 240.0, "height": 180.0,
+    "left": 0.0, "top": 0.0, "visible": False,
     "back_color": None, "fore_color": None,
     "font_name": "Tahoma", "font_size": 8.0, "start_up_position": 1,
     "controls": [],

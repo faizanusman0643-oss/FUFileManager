@@ -191,6 +191,7 @@ class MainWindow(QMainWindow):
         self.macros_enabled = not self.book.vba_modules
         self.macro_running = False
         self.immediate_log: List[str] = []
+        self.form_views: List = []
         self.vba_editor = None
         self.find_dialog = None
         self.fb_editing = False

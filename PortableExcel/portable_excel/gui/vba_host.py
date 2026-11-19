@@ -129,3 +129,11 @@ class GuiVBAHost(_HostBase):
 
     def save_workbook(self):
         return self.win.save()
+
+    # UserForms ---------------------------------------------------------------
+    def create_form_view(self, instance):
+        """forms.FormView for a live UserForm instance (runtime -> GUI)."""
+        from .userform_view import QtFormView
+        view = QtFormView(instance, self)
+        self.win.form_views.append(view)
+        return view

@@ -30,6 +30,11 @@ KNOWN_OBJECT_TYPES = {"object", "range", "worksheet", "workbook", "collection", 
                       "excel.range", "excel.worksheet", "excel.workbook", "excel.application",
                       "msforms.userform", "control", "listobject", "pivottable", "variant"}
 
+FORM_MEMBERS = {"controls", "caption", "hide", "show", "repaint", "activecontrol", "width",
+                "height", "left", "top", "backcolor", "forecolor", "font", "tag",
+                "startupposition", "insidewidth", "insideheight", "enabled", "visible",
+                "setfocus", "move"}
+
 EVENT_NAMES = re.compile(r"^(worksheet|workbook|class|userform|app|chart)_", re.I)
 
 
@@ -90,6 +95,7 @@ class Module:
             t = "document"
         self.type = t
         self.code = mdict.get("code") or ""
+        self.form_def = mdict.get("form") if t == "form" else None
         self.mdef = parse_module(self.name, t, self.code)
         self.mdef_ctx = self
         self.explicit = self.mdef.option_explicit
@@ -181,7 +187,7 @@ class Module:
 
     def init_vars(self):
         for i, d in enumerate(self.var_decls):
-            if self.type == "class":
+            if self.type in ("class", "form"):
                 continue
             self.vars[i] = self.make_var_default(i)
 
@@ -246,7 +252,7 @@ class Module:
     def resolve_member(self, name, rt, inside=True):
         i = self.var_index.get(name)
         if i is not None and (inside or not self.var_private[i]):
-            kind = "cls" if self.type == "class" else "mod"
+            kind = "cls" if self.type in ("class", "form") else "mod"
             return ("var", VarInfo(kind, i, self.var_ts[i], self.var_is_array[i], name,
                                    None if kind == "cls" else self.vars))
         c = self.consts.get(name)
@@ -255,9 +261,15 @@ class Module:
         p = self.procs.get(name) or self.prop_get.get(name) or self.prop_let.get(name) \
             or self.prop_set.get(name)
         if p is not None and (inside or not p.private):
-            if self.type == "class" and not inside:
+            if self.type in ("class", "form") and not inside:
                 return None
             return ("proc", p)
+        if self.type == "form" and inside:
+            for c in (self.form_def or {}).get("controls") or []:
+                if (c.get("name") or "").lower() == name:
+                    return ("formctrl", c["name"])
+            if name in FORM_MEMBERS:
+                return ("memember", name)
         e = self.enum_members.get(name)
         if e is not None:
             return ("const", self.enum_dict(e)[name])
@@ -340,6 +352,10 @@ class VBARuntime(SheetOpsMixin, FileIOMixin):
         self.find_state = None
         self.event_depth = 0
         self.running = 0
+        self.live_forms = []
+        self.form_defaults = {}
+        self.modal_depth = 0
+        self.end_pending = False
         self._globals_cache = {}
         self._wb = None
         from .excel import ApplicationObj, WorkbookObj, WindowObj
@@ -367,8 +383,6 @@ class VBARuntime(SheetOpsMixin, FileIOMixin):
             self.modules[m.lname] = m
             self.module_list.append(m)
             for e in m.mdef.errors:
-                if m.type == "form":
-                    continue
                 errors.append(VBAError("Compile error: " + e.message.replace("Syntax error: ", "Syntax error: ")
                                        if not e.message.startswith("Syntax") else "Compile error: " + e.message,
                                        m.name, e.line))
@@ -402,6 +416,23 @@ class VBARuntime(SheetOpsMixin, FileIOMixin):
             m.vars[:] = [EMPTY] * len(m.vars)
         self._initialized = False
         self.files_close_all()
+        self.close_all_forms()
+
+    def close_all_forms(self):
+        for inst in list(self.live_forms):
+            inst.close_view()
+        self.live_forms[:] = []
+        self.form_defaults.clear()
+
+    def form_default(self, m):
+        inst = self.form_defaults.get(m.lname)
+        if inst is None or not inst.loaded:
+            from .userforms import FormInstance
+            self.ensure_init()
+            inst = FormInstance(self, m, default=True)
+            self.form_defaults[m.lname] = inst
+            inst.initialize()
+        return inst
 
     # ------------------------------------------------------------------
     # types
@@ -469,7 +500,7 @@ class VBARuntime(SheetOpsMixin, FileIOMixin):
             if m.type == "class":
                 return ("class", m)
             if m.type == "form":
-                return ("form", m.name)
+                return ("form", m)
         if name == "thisworkbook" or (m is not None and m.type == "document"):
             return ("docobj", self._docobj_getter(name))
         for sh in self.book.sheets:
@@ -581,9 +612,10 @@ class VBARuntime(SheetOpsMixin, FileIOMixin):
                 self.invoke(m.initialize_proc, [], {}, inst)
             return inst
         if m is not None and m.type == "form":
-            e = VBARuntimeErr(5, f"UserForms are not supported yet ({m.name})")
-            e.fatal = True
-            raise e
+            from .userforms import FormInstance
+            inst = FormInstance(self, m)
+            inst.initialize()
+            return inst
         if short == "collection":
             return Collection()
         if short == "dictionary":
@@ -871,7 +903,14 @@ class VBARuntime(SheetOpsMixin, FileIOMixin):
         try:
             return fn()
         except VBAEnd:
+            if self.running > 1:
+                # End inside an event handler while a macro waits in a modal Show:
+                # close everything; the suspended macro stops when Show returns.
+                self.end_pending = True
+                self.close_all_forms()
+                return None
             self.reset_state()
+            self.end_pending = False
             return None
         except (VBARuntimeErr, VBAControl, VBACompileErr) as e:
             raise self._to_vba_error(e) from None

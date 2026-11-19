@@ -7,7 +7,7 @@ from .values import (EMPTY, NULL, NOTHING, MISSING, VDate, VErr, VBAArray, UDTVa
                      var_type, op_add, op_sub, op_mul, op_div, op_intdiv, op_mod, op_pow, op_neg,
                      op_concat, op_like, op_is, op_and, op_or, op_xor, op_eqv, op_imp, op_not,
                      CMP_BINARY, CMP_TEXT, to_float)
-from .objects import index_value, UnsupportedFormObj
+from .objects import index_value
 from .builtins import BUILTINS, CONSTANTS
 from . import ast as A
 
@@ -1105,6 +1105,18 @@ class Compiler:
                 def st(f, v):
                     obj.vba_let(name, NO_ARGS, NO_NAMED, v, is_set)
                 return st
+            if k == "memember":
+                mname = b[1]
+
+                def st(f, v):
+                    f.me.vba_let(mname, NO_ARGS, NO_NAMED, v, is_set)
+                return st
+            if k == "formctrl":
+                cname = b[1]
+
+                def st(f, v):
+                    f.me.control(cname).vba_let("", NO_ARGS, NO_NAMED, v, is_set)
+                return st
             self.error("Variable not defined" if self.explicit else "Invalid assignment target", node.line)
         if t is A.Index:
             base = node.base
@@ -1313,7 +1325,7 @@ class Compiler:
     def me_for(self, proc):
         m = proc.module
         rt = self.rt
-        if m.type == "class":
+        if m.type in ("class", "form"):
             if m is self.module:
                 return lambda f: f.me
             return lambda f: None
@@ -1485,8 +1497,33 @@ class Compiler:
                     raise e
                 return call
             if k == "form":
-                fname = b[1]
-                return lambda f: UnsupportedFormObj(fname)
+                fmod = b[1]
+                if not arg_nodes:
+                    return lambda f: rt.form_default(fmod)
+                argsfn = self.make_args_fn(arg_nodes)
+
+                def call(f):
+                    args, named = argsfn(f)
+                    return rt.form_default(fmod).vba_get("", args, named)
+                return call
+            if k == "memember":
+                mname = b[1]
+                argsfn = self.make_args_fn(arg_nodes)
+
+                def call(f):
+                    args, named = argsfn(f)
+                    return f.me.vba_get(mname, args, named)
+                return call
+            if k == "formctrl":
+                cname = b[1]
+                if not arg_nodes:
+                    return lambda f: f.me.control(cname)
+                argsfn = self.make_args_fn(arg_nodes)
+
+                def call(f):
+                    args, named = argsfn(f)
+                    return f.me.control(cname).vba_get("", args, named)
+                return call
             if k in ("module", "enum", "class", "type"):
                 self.error("Expected variable or procedure, not module", callee.line)
             self.error("Sub or Function not defined", callee.line)

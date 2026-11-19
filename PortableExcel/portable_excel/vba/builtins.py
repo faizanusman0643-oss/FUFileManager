@@ -255,11 +255,21 @@ def b_callbyname(rt, obj, procname, calltype, *args):
     return obj.vba_get(name, args, {})
 
 
-@builtin("load", "unload")
+@builtin("load")
 def b_load(rt, obj):
-    e = VBARuntimeErr(5, "UserForms are not supported yet")
-    e.fatal = True
-    raise e
+    from .userforms import FormInstance
+    if not isinstance(obj, FormInstance):
+        raise rt_error(424)
+    return EMPTY
+
+
+@builtin("unload")
+def b_unload(rt, obj):
+    from .userforms import FormInstance, ControlObj
+    if isinstance(obj, FormInstance):
+        obj.unload(nested=True)
+        return EMPTY
+    raise rt_error(424)
 
 
 @builtin("randomize")

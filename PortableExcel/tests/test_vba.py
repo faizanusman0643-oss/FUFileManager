@@ -974,7 +974,7 @@ End Function''', [{"name": "Sheet1", "type": "document", "code": "Sub SheetMacro
         rt.run("Nope")
 
 
-def test_userform_not_supported_and_api_declare():
+def test_userform_without_gui_and_api_declare():
     rt, book, eng, host = make('''
 #If VBA7 Then
 Private Declare PtrSafe Function GetTickCount Lib "kernel32" () As Long
@@ -992,7 +992,7 @@ Sub UseShell()
 End Sub''', [{"name": "UserForm1", "type": "form", "code": "Private Sub UserForm_Initialize()\nEnd Sub"}])
     with pytest.raises(VBAError) as ei:
         rt.run("ShowForm")
-    assert "UserForms are not supported" in ei.value.message
+    assert "UserForms need the GUI" in ei.value.message
     with pytest.raises(VBAError) as ei:
         rt.run("CallApi")
     assert "Windows API calls are not supported" in ei.value.message
