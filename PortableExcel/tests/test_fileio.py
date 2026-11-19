@@ -384,6 +384,7 @@ def test_atomic_save_keeps_original_on_failure(tmp_path, monkeypatch):
     assert sorted(os.listdir(tmp_path)) == ["keep.xlsx"]
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits do not exist on Windows")
 def test_save_preserves_permissions(tmp_path):
     p = str(tmp_path / "perm.xlsx")
     save_workbook(_sample_book(), p)
