@@ -189,6 +189,8 @@ class SheetOpsMixin:
         self._indexes.pop(id(sheet), None)
 
     def write_cell(self, sheet, r, c, raw):
+        if self.udf_depth:
+            raise VBARuntimeErr(1004, "A worksheet function cannot change cells")
         key = (r, c)
         cells = sheet.cells
         had = key in cells

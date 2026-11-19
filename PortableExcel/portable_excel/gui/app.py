@@ -79,6 +79,11 @@ def create_app(argv=None):
         app.setOrganizationName("PortableExcel")
         app.setApplicationDisplayName("PortableExcel")
         theme.apply(app)
+        try:
+            from .barcode_font import register_bundled_fonts
+            register_bundled_fonts()
+        except Exception:
+            log.exception("could not register bundled fonts")
         app.setWindowIcon(icons.app_icon())
     return app
 

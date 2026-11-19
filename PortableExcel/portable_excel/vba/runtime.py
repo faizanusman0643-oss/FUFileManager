@@ -352,6 +352,9 @@ class VBARuntime(SheetOpsMixin, FileIOMixin):
         self.find_state = None
         self.event_depth = 0
         self.running = 0
+        self.udf_depth = 0
+        self.udf_steps = 0
+        self._udf_cache = {}
         self.live_forms = []
         self.form_defaults = {}
         self.modal_depth = 0
@@ -850,6 +853,11 @@ class VBARuntime(SheetOpsMixin, FileIOMixin):
     # ------------------------------------------------------------------
     def poll(self):
         self.budget = 2000
+        if self.udf_depth:
+            self.udf_steps += 2000
+            if self.udf_steps > 5_000_000:
+                raise VBARuntimeErr(28, "User-defined function ran too long")
+            return
         try:
             self.host.process_events()
         except Exception:
@@ -933,6 +941,112 @@ class VBARuntime(SheetOpsMixin, FileIOMixin):
     # ------------------------------------------------------------------
     # public API
     # ------------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # worksheet user-defined functions
+    # ------------------------------------------------------------------
+    def attach_udfs(self, engine=None):
+        """Let formulas call Public Functions of standard modules."""
+        eng = engine if engine is not None else self.engine
+        if eng is not None:
+            eng.udf_resolver = self.udf_call
+            try:
+                eng.invalidate()
+            except Exception:
+                pass
+
+    def detach_udfs(self, engine=None):
+        eng = engine if engine is not None else self.engine
+        if eng is not None and getattr(eng, "udf_resolver", None) == self.udf_call:
+            eng.udf_resolver = None
+
+    def find_udf(self, name):
+        low = name.lower()
+        for pre in ("_xlfn.", "_xludf.", "_xlws."):
+            if low.startswith(pre):
+                low = low[len(pre):]
+        key = low
+        if key in self._udf_cache:
+            return self._udf_cache[key]
+        p = None
+        if "." in low:
+            mname, fname = low.rsplit(".", 1)
+            m = self.modules.get(mname)
+            if m is not None and m.type == "standard":
+                p = m.procs.get(fname)
+        else:
+            for m in self.module_list:
+                if m.type == "standard" and not m.mdef.option_private:
+                    q = m.procs.get(low)
+                    if q is not None and q.kind == "function" and not q.private:
+                        p = q
+                        break
+        if p is not None and (p.kind != "function" or p.private):
+            p = None
+        self._udf_cache[key] = p
+        return p
+
+    def udf_call(self, name, args, sheet):
+        from ..model import ERR_NAME, ERR_VALUE, XLError
+        p = self.find_udf(name)
+        if p is None:
+            return ERR_NAME
+        if self.udf_depth > 20:
+            return ERR_VALUE
+        from .sheetops import _xl_to_vba, _vba_to_xl
+        from .excel import RangeObj
+        vargs = []
+        for a in args:
+            if hasattr(a, "r1") and hasattr(a, "sheet") and hasattr(a, "c2"):
+                vargs.append(RangeObj(self, a.sheet, a.r1, a.c1, a.r2, a.c2))
+            elif isinstance(a, list):
+                rows = [[_xl_to_vba(x) for x in (r if isinstance(r, list) else [r])] for r in a]
+                vargs.append(VBAArray.from_2d(rows, 1))
+            elif isinstance(a, float) and a.is_integer() and abs(a) < 2 ** 31:
+                vargs.append(a)
+            else:
+                vargs.append(_xl_to_vba(a))
+        if len(vargs) > len(p.params) and not (p.params and p.params[-1].paramarray):
+            return ERR_VALUE
+        self.udf_depth += 1
+        if self.udf_depth == 1:
+            self.udf_steps = 0
+        prev_mod, prev_depth = self.cur_mod, self.depth
+        try:
+            self.ensure_init()
+            res = self.invoke(p, vargs, {}, None)[0]
+        except (VBAError, VBARuntimeErr, VBAControl, VBACompileErr, RecursionError):
+            return ERR_VALUE
+        except Exception:
+            return ERR_VALUE
+        finally:
+            self.udf_depth -= 1
+            self.cur_mod, self.depth = prev_mod, prev_depth
+        try:
+            if isinstance(res, VBAObject):
+                res = to_value(res)
+            if type(res) is VBAArray:
+                res = res.data[0] if res.data else EMPTY
+                if isinstance(res, VBAObject):
+                    res = to_value(res)
+        except (VBARuntimeErr, Exception):
+            return ERR_VALUE
+        if res is EMPTY or res is MISSING:
+            return 0.0
+        if res is NULL or res is NOTHING:
+            return ERR_VALUE
+        if type(res) is VErr:
+            from .values import XL_CODE_TO_TEXT
+            from ..model import ERRORS_BY_CODE
+            return ERRORS_BY_CODE.get(XL_CODE_TO_TEXT.get(res.number, "#VALUE!"), ERR_VALUE)
+        if isinstance(res, bool) or isinstance(res, str):
+            return res
+        if isinstance(res, (int, float)):
+            return float(res)
+        try:
+            return float(res)
+        except Exception:
+            return to_str(res)
+
     def list_macros(self):
         out = []
         for m in self.module_list:

@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (QAbstractItemDelegate, QAbstractItemView, QApplic
                                QCompleter, QHeaderView, QLineEdit, QStyle,
                                QStyledItemDelegate, QStyleOptionHeader, QTableView)
 
+from . import barcode_font
 from ..model import (MAX_COLS, MAX_ROWS, XLError, a1, col_to_name, parse_a1,
                      parse_range_a1, value_to_text)
 
@@ -304,6 +305,12 @@ class CellDelegate(QStyledItemDelegate):
 
     def _paint_text(self, p, rect, r, c, raw, text, st, model):
         st = st or {}
+        fname = st.get("font_name")
+        if fname and barcode_font.needs_emulation(fname) and \
+                not (self.view.ctx.show_formulas and raw.startswith("=")):
+            if barcode_font.paint(p, rect, text, fname, st.get("color"),
+                                  text_font=self.view.base_font):
+                return
         font = self._font(st if st else None)
         fm = QFontMetrics(font)
         align = st.get("align")
