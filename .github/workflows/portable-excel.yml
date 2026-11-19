@@ -1,0 +1,51 @@
+name: Build PortableExcel (Windows .exe)
+on:
+  push:
+    paths:
+      - "PortableExcel/**"
+      - ".github/workflows/portable-excel.yml"
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: PortableExcel
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller pytest
+      - name: Run tests
+        env:
+          QT_QPA_PLATFORM: offscreen
+          PORTABLEEXCEL_NO_LOCK: "1"
+        run: python -m pytest tests -q
+      - name: Build portable exe
+        run: pyinstaller --noconfirm PortableExcel.spec
+      - name: Smoke test exe starts
+        shell: pwsh
+        env:
+          QT_QPA_PLATFORM: offscreen
+          PORTABLEEXCEL_NO_LOCK: "1"
+          PORTABLEEXCEL_SMOKE_TEST: "1"
+        run: |
+          $p = Start-Process -FilePath dist\PortableExcel.exe -PassThru -Wait
+          if ($p.ExitCode -ne 0) { throw "exe exited with code $($p.ExitCode)" }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PortableExcel-Windows
+          path: PortableExcel/dist/PortableExcel.exe
+      - name: Publish release (direct download link)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: portableexcel-latest
+          name: PortableExcel (latest Windows .exe)
+          prerelease: true
+          files: PortableExcel/dist/PortableExcel.exe
