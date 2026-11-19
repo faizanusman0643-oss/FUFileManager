@@ -43,6 +43,8 @@ jobs:
           name: PortableExcel-Windows
           path: PortableExcel/dist/PortableExcel.exe
       - name: Publish release (direct download link)
+        # Only finished builds update the download link: run manually, or put [release] in the commit message
+        if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[release]')
         uses: softprops/action-gh-release@v2
         with:
           tag_name: portableexcel-latest
