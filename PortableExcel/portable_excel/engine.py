@@ -1324,7 +1324,26 @@ class _Eval:
     def call(self, name, nodes):
         f = FUNCTIONS.get(name)
         if f is None:
-            raise FormulaError(ERR_NAME)
+            udf = getattr(self.eng, "udf_resolver", None)
+            if udf is None:
+                raise FormulaError(ERR_NAME)
+            args = []
+            for nd in nodes:
+                try:
+                    args.append(self.ev(nd))
+                except FormulaError as e:
+                    args.append(e.error)
+            res = udf(name, args, self.sheet)
+            if isinstance(res, list):
+                res = res[0][0] if res and isinstance(res[0], list) and res[0] else \
+                    (res[0] if res else None)
+            if isinstance(res, XLError):
+                raise FormulaError(res)
+            if isinstance(res, bool) or isinstance(res, str) or res is None:
+                return "" if res is None else res
+            if isinstance(res, (int, float)):
+                return float(res)
+            return str(res)
         if name in _LAZY:
             return f(self, nodes)
         args = []
@@ -1419,6 +1438,10 @@ class FormulaEngine:
         self._depth = 0
         self._used_cache: Dict[int, tuple] = {}
         self._index_cache: Dict[int, dict] = {}
+        # callable(name, args, sheet) -> value for functions the engine does
+        # not know (VBA user-defined functions). args: scalars, RangeRef,
+        # nested lists. Return ERR_NAME for unknown names.
+        self.udf_resolver = None
         if sys.getrecursionlimit() < 4000:
             sys.setrecursionlimit(4000)
 
