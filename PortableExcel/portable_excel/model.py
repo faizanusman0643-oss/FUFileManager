@@ -202,6 +202,19 @@ class Sheet:
         self.col_widths: Dict[int, int] = {}  # pixels
         self.row_heights: Dict[int, int] = {}  # pixels
         self.visible = True
+        # Floating pictures anchored to a cell (one-cell anchor), e.g. barcodes.
+        # Each image is a dict:
+        #   id: str (unique in the workbook), name: str ("Barcode 1")
+        #   row, col: anchor cell (0-based); dx, dy: offset in px from that cell's top-left
+        #   width, height: size in px
+        #   data: PNG bytes; fmt: "png" (others converted to PNG on load)
+        #   barcode: None, or {"symbology": "code128"|"code39"|"ean13"|"ean8"|"upca"
+        #                      |"itf"|"qr"|"datamatrix", "source": "A2" (cell on this
+        #                      sheet whose displayed value is encoded) or None,
+        #                      "text": str (fixed data when source is None),
+        #                      "show_text": bool, "module_px": int, "bar_height_px": int}
+        #   A barcode with a source is re-rendered when that cell's value changes.
+        self.images: List[dict] = []
 
     # raw access -----------------------------------------------------------
     def get_raw(self, r: int, c: int) -> str:

@@ -323,10 +323,8 @@ def _load_ooxml(data: bytes, ext: str) -> Workbook:
             mods = json.loads(zf.read(VBA_JSON_PART).decode("utf-8"))
             if isinstance(mods, dict):
                 mods = mods.get("modules", [])
-            book.vba_modules = [
-                {"name": str(m["name"]), "type": str(m.get("type", "standard")),
-                 "code": str(m.get("code", "")).replace("\r\n", "\n").replace("\r", "\n")}
-                for m in mods if isinstance(m, dict) and "name" in m]
+            book.vba_modules = [_module_from_json(m) for m in mods
+                                if isinstance(m, dict) and "name" in m]
         except Exception:
             pass
     book.vba_modified = False
@@ -336,6 +334,20 @@ def _load_ooxml(data: bytes, ext: str) -> Workbook:
     except Exception:
         pass
     return book
+
+
+def _module_from_json(m: dict) -> dict:
+    mod = {"name": str(m["name"]), "type": str(m.get("type", "standard")),
+           "code": str(m.get("code", "")).replace("\r\n", "\n").replace("\r", "\n")}
+    if mod["type"] == "form" or isinstance(m.get("form"), dict):
+        from .forms import new_form, normalize_form
+        form = m.get("form")
+        try:
+            mod["form"] = normalize_form(form if isinstance(form, dict) else new_form(mod["name"]))
+        except Exception as exc:
+            _log.warning("UserForm %s: invalid stored form (%s)", mod["name"], exc)
+            mod["form"] = normalize_form(new_form(mod["name"]))
+    return mod
 
 
 def _read_cells(ws, sh: Sheet, to_excel, style_cache) -> None:
@@ -716,7 +728,8 @@ def _pt(himetric) -> float:
     exact = himetric * _HM_PT
     for nd in (0, 1, 2):
         cand = round(exact, nd)
-        if round(cand / _HM_PT) == himetric:
+        back = cand / _HM_PT
+        if round(back) == himetric or int(back + 1e-9) == himetric:
             return float(cand)
     return round(exact, 2)
 
@@ -1624,8 +1637,7 @@ def _ooxml_bytes(book: Workbook, ext: str, warnings: List[str]) -> bytes:
     if write_json:
         json_bytes = json.dumps(
             {"format": "portableexcel-vba", "version": 1,
-             "modules": [{"name": m.get("name", ""), "type": m.get("type", "standard"),
-                          "code": m.get("code", "")} for m in book.vba_modules]},
+             "modules": [_module_json(m) for m in book.vba_modules]},
             ensure_ascii=False, indent=1).encode("utf-8")
     return _postprocess_zip(data, ext, vbin if macro else None, json_bytes)
 
@@ -1640,8 +1652,16 @@ def _same_modules(modules: List[dict], vbin: bytes) -> bool:
         orig = extract_vba_modules(vbin)
     except Exception:
         return False
-    norm = lambda ms: [(m.get("name"), m.get("type"), m.get("code")) for m in ms]  # noqa: E731
+    norm = lambda ms: [json.dumps(_module_json(m), sort_keys=True, default=str)  # noqa: E731
+                       for m in ms]
     return norm(orig) == norm(modules)
+
+
+def _module_json(m: dict) -> dict:
+    d = {"name": m.get("name", ""), "type": m.get("type", "standard"), "code": m.get("code", "")}
+    if m.get("form") is not None:
+        d["form"] = m["form"]
+    return d
 
 
 class _exact_floats:
