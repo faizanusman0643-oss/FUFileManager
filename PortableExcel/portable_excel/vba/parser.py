@@ -228,6 +228,9 @@ class Parser:
             if t.val == "-":
                 self.next()
                 return UnOp("-", self.parse_unary_operand(), t.line)
+            if t.val == "#":
+                self.next()
+                return self.parse_postfix()
             self.error(f"Syntax error: unexpected '{t.text}'")
         if k == "id":
             v = t.val

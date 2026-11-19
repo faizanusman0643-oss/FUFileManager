@@ -2,7 +2,9 @@
 # Build:  pyinstaller --noconfirm PortableExcel.spec
 from PyInstaller.utils.hooks import collect_submodules
 
-hidden = collect_submodules("oletools") + collect_submodules("msoffcrypto") + ["olefile"]
+hidden = (collect_submodules("portable_excel") + collect_submodules("openpyxl")
+          + collect_submodules("oletools") + collect_submodules("msoffcrypto")
+          + ["olefile", "et_xmlfile"])
 
 a = Analysis(
     ["run.py"],

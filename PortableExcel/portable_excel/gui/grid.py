@@ -377,10 +377,14 @@ class CellDelegate(QStyledItemDelegate):
         ed.destroyed.connect(self._editor_gone)
         return ed
 
-    def _editor_gone(self, *_):
-        self.editor = None
-        self.view.ctx.set_mode("Ready")
-        self.view.viewport().update()
+    def _editor_gone(self, obj=None):
+        if self.editor is obj or obj is None:
+            self.editor = None
+        try:
+            self.view.ctx.set_mode("Ready")
+            self.view.viewport().update()
+        except RuntimeError:  # view already deleted
+            pass
 
     def setEditorData(self, editor, index):
         start = self.view.pending_text
@@ -642,6 +646,10 @@ class FrozenView(GridBase):
         self.verticalHeader().sectionEntered.connect(main.verticalHeader().sectionEntered)
         self.viewport().setCursor(main.viewport().cursor())
 
+    def scrollTo(self, index, hint=QAbstractItemView.EnsureVisible):
+        # the overlay never scrolls by itself; the main view keeps it in sync
+        pass
+
     def _resized_h(self, i, old, new):
         if self.main.columnWidth(i) != new:
             self.main.setColumnWidth(i, new)
@@ -651,7 +659,7 @@ class FrozenView(GridBase):
             self.main.setRowHeight(i, new)
 
     def mouseDoubleClickEvent(self, e):
-        idx = self.indexAt(e.pos())
+        idx = self.indexAt(e.position().toPoint())
         if idx.isValid():
             self.main.setCurrentIndex(idx)
             self.main.edit(idx)
@@ -1102,6 +1110,15 @@ class SpreadsheetView(GridBase):
 
     # keyboard ------------------------------------------------------------------
     def keyPressEvent(self, e):
+        ed = self.delegate.editor
+        if ed is not None:  # keys that reached the view while an editor is open
+            if not getattr(self, "_forwarding", False):
+                self._forwarding = True
+                try:
+                    QApplication.sendEvent(ed, e)
+                finally:
+                    self._forwarding = False
+            return
         key = e.key()
         mods = e.modifiers()
         ctrl = bool(mods & Qt.ControlModifier)
@@ -1223,9 +1240,8 @@ class SpreadsheetView(GridBase):
         ed = self.delegate.editor
         if ed is not None:
             ed.setFocus()
-            if text is None:
-                ed.deselect()
-                ed.end(False)
+            ed.deselect()
+            ed.end(False)
 
     def finish_edit(self, editor, commit=True, move=(0, 0), fill_selection=False):
         text = editor.text()
@@ -1246,7 +1262,10 @@ class SpreadsheetView(GridBase):
             self.finish_edit(ed, commit=True)
 
     def closeEditor(self, editor, hint):
+        if self.delegate.editor is editor:
+            self.delegate.editor = None
         super().closeEditor(editor, hint)
+        self.ctx.set_mode("Ready")
         self.refresh()
 
     # mouse: fill handle & point mode ---------------------------------------
@@ -1266,6 +1285,9 @@ class SpreadsheetView(GridBase):
             return False
         if not (QApplication.mouseButtons() & Qt.LeftButton):
             return False
+        fw = QApplication.focusWidget()
+        if fw is self or fw in self.overlays.values():
+            return True
         w = QApplication.widgetAt(self.cursor().pos())
         while w is not None:
             if w is self or w in self.overlays.values():
@@ -1281,7 +1303,7 @@ class SpreadsheetView(GridBase):
         cont = bool(ps and ps.get("editor") is target and ps.get("text") == target.text())
         if not target.can_point() and not cont:
             return False
-        idx = view.indexAt(e.pos())
+        idx = view.indexAt(e.position().toPoint())
         if not idx.isValid():
             return False
         ref = a1(idx.row(), idx.column())
@@ -1298,7 +1320,7 @@ class SpreadsheetView(GridBase):
         ps = self.point_state
         if not ps or not ps.get("drag") or not (e.buttons() & Qt.LeftButton):
             return False
-        idx = view.indexAt(e.pos())
+        idx = view.indexAt(e.position().toPoint())
         if not idx.isValid():
             return True
         ar, ac = ps["anchor"]
@@ -1339,11 +1361,11 @@ class SpreadsheetView(GridBase):
         if self.is_editing() and e.button() == Qt.LeftButton:
             self.commit_open_editor()
         self.ctx.formula_bar_focus_lost_commit()
-        if e.button() == Qt.LeftButton and self._on_handle(e.pos()):
+        if e.button() == Qt.LeftButton and self._on_handle(e.position().toPoint()):
             self.fill_drag = {"src": self.active_range(), "dst": None}
             return
         if e.button() == Qt.RightButton:
-            idx = self.indexAt(e.pos())
+            idx = self.indexAt(e.position().toPoint())
             if idx.isValid():
                 r1, c1, r2, c2 = self.active_range()
                 inside = any(a[0] <= idx.row() <= a[2] and a[1] <= idx.column() <= a[3]
@@ -1358,7 +1380,7 @@ class SpreadsheetView(GridBase):
         if self.handle_point_move(self, e):
             return
         if self.fill_drag is not None:
-            idx = self.indexAt(e.pos())
+            idx = self.indexAt(e.position().toPoint())
             if idx.isValid():
                 r1, c1, r2, c2 = self.fill_drag["src"]
                 r, c = idx.row(), idx.column()
@@ -1373,7 +1395,7 @@ class SpreadsheetView(GridBase):
                 self.refresh()
             return
         if not e.buttons():
-            self.viewport().setCursor(Qt.CrossCursor if self._on_handle(e.pos())
+            self.viewport().setCursor(Qt.CrossCursor if self._on_handle(e.position().toPoint())
                                       else Qt.ArrowCursor)
         super().mouseMoveEvent(e)
 
@@ -1392,10 +1414,10 @@ class SpreadsheetView(GridBase):
         super().mouseReleaseEvent(e)
 
     def mouseDoubleClickEvent(self, e):
-        if self._on_handle(e.pos()):
+        if self._on_handle(e.position().toPoint()):
             self.ctx.fill_handle_double_click()
             return
-        idx = self.indexAt(e.pos())
+        idx = self.indexAt(e.position().toPoint())
         if idx.isValid():
             self.setCurrentIndex(idx)
             self.start_edit(None)

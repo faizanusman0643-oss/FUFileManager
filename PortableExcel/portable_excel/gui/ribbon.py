@@ -29,12 +29,12 @@ class TitleStrip(QWidget):
         self.qat = QHBoxLayout()
         self.qat.setSpacing(0)
         lay.addLayout(self.qat)
-        lay.addStretch(1)
         self.title = QLabel("Book1 - PortableExcel")
         self.title.setObjectName("titleLabel")
         self.title.setAlignment(Qt.AlignCenter)
-        lay.addWidget(self.title)
-        lay.addStretch(1)
+        self.title.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        lay.addWidget(self.title, 1)
+        lay.addSpacing(90)
         self.right = QLabel("")
         self.right.setObjectName("titleRight")
         lay.addWidget(self.right)
@@ -86,7 +86,7 @@ class RibbonGroup(QFrame):
             b.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
         else:
             b.setObjectName("smallButton")
-            b.setIconSize(QSize(16, 16))
+            b.setIconSize(QSize(16, 16) if text_beside else QSize(20, 20))
             b.setToolButtonStyle(Qt.ToolButtonTextBesideIcon if text_beside
                                  else Qt.ToolButtonIconOnly)
         if menu is not None:
