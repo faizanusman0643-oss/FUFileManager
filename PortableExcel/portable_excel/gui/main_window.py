@@ -154,8 +154,10 @@ class _MacroStopFilter(QObject):
     def eventFilter(self, obj, ev):
         t = ev.type()
         if t == QEvent.KeyPress:
-            if ev.key() in (Qt.Key_Escape, Qt.Key_Pause, Qt.Key_Cancel) or (
-                    ev.key() == Qt.Key_Break):
+            w = obj if isinstance(obj, QWidget) else None
+            in_form = w is not None and type(w.window()).__name__ == "QtFormView"
+            if ev.key() in (Qt.Key_Pause, Qt.Key_Cancel) or (
+                    ev.key() == Qt.Key_Escape and not in_form):
                 self.win.stop_macro()
                 return True
         if t in (QEvent.KeyPress, QEvent.MouseButtonPress, QEvent.MouseButtonDblClick,
@@ -2768,6 +2770,50 @@ class MainWindow(QMainWindow):
         self.vba_code_changed()
         if self.vba_editor is not None:
             self.vba_editor.reload_from_book()
+
+    def show_userform(self, name: str):
+        """Run a UserForm (F5 in the designer): <name>.Show through the runtime;
+        falls back to a preview when the interpreter has no UserForm support."""
+        if self.view.is_editing():
+            self.view.commit_open_editor()
+        before = len(self.form_views)
+        ok = False
+        if self._check_macros_allowed() and self.ensure_runtime():
+            if self.macro_running:
+                return False
+            self.macro_running = True
+            filt = _MacroStopFilter(self)
+            try:
+                out = self.runtime.evaluate_immediate(f"{name}.Show")
+                ok = len(self.form_views) > before
+                if not ok and out and "error" in str(out).lower() and \
+                        "need the gui" not in str(out).lower() and \
+                        "not defined" not in str(out).lower():
+                    ok = True
+                    QMessageBox.warning(self, "PortableExcel VBA", str(out))
+            except Exception as e:
+                ok = True
+                self._handle_vba_exception(e)
+            finally:
+                self.macro_running = False
+                del filt
+                self.refresh_from_macro()
+        if not ok:
+            return self.preview_userform(name)
+        return True
+
+    def preview_userform(self, name: str):
+        from .userform_view import PreviewInstance, QtFormView
+        m = next((x for x in self.book.vba_modules if x.get("name", "").lower() ==
+                  name.lower() and x.get("type") == "form"), None)
+        if m is None:
+            return False
+        inst = PreviewInstance(m["name"], m.get("form"))
+        v = QtFormView(inst, GuiVBAHost(self))
+        inst.view = v
+        self.form_views.append(v)
+        v.show(False)
+        return v
 
     def immediate_execute(self, text) -> str:
         if not self._vba_available():

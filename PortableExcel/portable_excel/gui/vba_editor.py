@@ -313,6 +313,7 @@ class VBAEditor(QMainWindow):
         self.setWindowIcon(icons.icon("vba"))
         self.resize(1100, 720)
         self.editors: Dict[str, CodeEditor] = {}
+        self.designers: Dict[str, QWidget] = {}
         self._loading = False
         self._last_find = ""
         self.tabs = QTabWidget()
@@ -341,6 +342,8 @@ class VBAEditor(QMainWindow):
         self.tree = QTreeWidget()
         self.tree.setHeaderHidden(True)
         self.tree.itemDoubleClicked.connect(self._tree_open)
+        self.tree.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.tree.customContextMenuRequested.connect(self._tree_menu)
         self.tree.itemClicked.connect(self._tree_select)
         dock = QDockWidget("Project - VBAProject", self)
         dock.setObjectName("projectDock")
@@ -398,6 +401,9 @@ class VBAEditor(QMainWindow):
         self.a_mod = self._act("Insert Module", "module", lambda: self.insert_module("standard"))
         self.a_cls = self._act("Insert Class Module", "class_module",
                                lambda: self.insert_module("class"))
+        self.a_form = self._act("Insert UserForm", "form", self.insert_userform)
+        self.a_code = self._act("View Code", "module", self.view_code, "F7")
+        self.a_obj = self._act("View Object", "form", self.view_object, "Shift+F7")
         self.a_rem = self._act("Remove Module", "remove", self.remove_module)
         self.a_imp = self._act("Import File...", "import", self.import_file, "Ctrl+M")
         self.a_exp = self._act("Export File...", "export", self.export_file, "Ctrl+E")
@@ -407,7 +413,8 @@ class VBAEditor(QMainWindow):
         self.a_find = self._act("Find", "find", self.find, "Ctrl+F")
         self.a_find_next = self._act("Find Next", "find", self.find_next, "F3")
         self.a_view_excel = self._act("View PortableExcel", "app", self._show_main, "Alt+F11")
-        for a in (self.a_save, None, self.a_mod, self.a_cls, self.a_rem, None, self.a_imp,
+        for a in (self.a_save, None, self.a_mod, self.a_cls, self.a_form, self.a_rem, None,
+                  self.a_code, self.a_obj, None, self.a_imp,
                   self.a_exp, None, self.a_run, self.a_stop, None, self.a_find,
                   self.a_view_excel):
             if a is None:
@@ -462,7 +469,7 @@ class VBAEditor(QMainWindow):
             t = m.get("type", "standard")
             if t == "document":
                 continue
-            it = QTreeWidgetItem([m["name"] + (" (read-only)" if t == "form" else "")])
+            it = QTreeWidgetItem([m["name"]])
             it.setData(0, Qt.UserRole, m["name"])
             it.setIcon(0, icons.icon({"class": "class_module", "form": "form"}.get(t, "module")))
             groups.get(t, groups["standard"]).addChild(it)
@@ -488,22 +495,23 @@ class VBAEditor(QMainWindow):
         self.prop_name.setText(name)
         t = self._module_type(name)
         self.prop_type.setText(t)
-        self.prop_name.setReadOnly(t in ("document", "form"))
+        self.prop_name.setReadOnly(t == "document")
 
     def _tree_open(self, item, _col=0):
         name = item.data(0, Qt.UserRole)
         if name:
             self.open_module(name)
 
-    def open_module(self, name: str, line: Optional[int] = None) -> Optional[CodeEditor]:
+    def open_module(self, name: str, line: Optional[int] = None, code: bool = False):
         m = self.module(name)
+        if m is not None and m.get("type") == "form" and not code and not line:
+            return self.open_designer(m["name"])
         if m is None and name not in self._document_names():
             return None
         key = (m["name"] if m else name)
         ed = self.editors.get(key.lower())
         if ed is None:
-            ro = bool(m and m.get("type") == "form")
-            ed = CodeEditor(read_only=ro)
+            ed = CodeEditor()
             self._loading = True
             ed.setPlainText(m.get("code", "") if m else "")
             self._loading = False
@@ -512,6 +520,8 @@ class VBAEditor(QMainWindow):
             self.editors[key.lower()] = ed
             sh = {s.code_name.lower(): s for s in self.book.sheets}.get(key.lower())
             title = f"{key} ({sh.name})" if sh else key
+            if m is not None and m.get("type") == "form":
+                title = f"{key} (Code)"
             self.tabs.addTab(ed, icons.icon("module"), title)
         self.tabs.setCurrentWidget(ed)
         if line:
@@ -521,6 +531,9 @@ class VBAEditor(QMainWindow):
 
     def current_module_name(self) -> Optional[str]:
         ed = self.tabs.currentWidget()
+        for k, d in self.designers.items():
+            if d is ed:
+                return d.module["name"]
         for k, e in self.editors.items():
             if e is ed:
                 m = self.module(k)
@@ -533,6 +546,9 @@ class VBAEditor(QMainWindow):
         for k, e in list(self.editors.items()):
             if e is ed:
                 del self.editors[k]
+        for k, e in list(self.designers.items()):
+            if e is ed:
+                del self.designers[k]
         self.tabs.removeTab(i)
         ed.deleteLater()
 
@@ -579,8 +595,6 @@ class VBAEditor(QMainWindow):
         if m is None:
             m = {"name": key, "type": "document", "code": ""}
             self.book.vba_modules.append(m)
-        if m.get("type") == "form":
-            return
         m["code"] = ed.toPlainText()
         self.book.vba_modified = True
         self.win.vba_code_changed()
@@ -629,10 +643,10 @@ class VBAEditor(QMainWindow):
         if r == QMessageBox.Yes:
             self.export_file(name)
         self.book.vba_modules.remove(m)
-        ed = self.editors.pop(name.lower(), None)
-        if ed is not None:
-            self.tabs.removeTab(self.tabs.indexOf(ed))
-            ed.deleteLater()
+        for w in (self.editors.pop(name.lower(), None), self.designers.pop(name.lower(), None)):
+            if w is not None:
+                self.tabs.removeTab(self.tabs.indexOf(w))
+                w.deleteLater()
         self.book.vba_modified = True
         self.win.vba_code_changed()
         self.rebuild_tree()
@@ -680,6 +694,15 @@ class VBAEditor(QMainWindow):
     def run_current(self):
         ed = self.tabs.currentWidget()
         name = self.current_module_name()
+        m = self.module(name) if name else None
+        if m is not None and m.get("type") == "form":
+            p = None
+            if isinstance(ed, CodeEditor):
+                p = procedure_at(ed.toPlainText(), ed.current_line())
+            if not p or not (p[0] == "Sub" and not p[2] and
+                             not re.match(r"(UserForm|\w+)_", p[1])):
+                self.win.show_userform(m["name"])
+                return
         if isinstance(ed, CodeEditor) and name:
             p = procedure_at(ed.toPlainText(), ed.current_line())
             if p and p[0] == "Sub" and not p[2]:
@@ -723,14 +746,25 @@ class VBAEditor(QMainWindow):
         new = self.prop_name.text().strip()
         it = self.tree.currentItem()
         old = it.data(0, Qt.UserRole) if it else None
-        m = self.module(old) if old else None
-        if not m or m.get("type") in ("document", "form") or not new or new == old:
-            return
-        if not re.fullmatch(r"[A-Za-z]\w{0,30}", new) or self.module(new):
-            QMessageBox.warning(self, "PortableExcel VBA Editor", "Invalid or duplicate name.")
+        if old and not self.rename_module(old, new):
             self.prop_name.setText(old)
-            return
+
+    def rename_module(self, old: str, new: str) -> bool:
+        m = self.module(old) if old else None
+        if not m or m.get("type") == "document" or not new:
+            return False
+        if new == old:
+            return True
+        if not re.fullmatch(r"[A-Za-z]\w{0,30}", new) or (self.module(new) and
+                                                         new.lower() != old.lower()):
+            QMessageBox.warning(self, "PortableExcel VBA Editor", "Invalid or duplicate name.")
+            return False
         m["name"] = new
+        d = self.designers.pop(old.lower(), None)
+        if d is not None:
+            self.designers[new.lower()] = d
+            self.tabs.setTabText(self.tabs.indexOf(d), f"{new} (UserForm)")
+            d.props.refresh()
         ed = self.editors.pop(old.lower(), None)
         if ed is not None:
             self.editors[new.lower()] = ed
@@ -740,9 +774,12 @@ class VBAEditor(QMainWindow):
             except (RuntimeError, TypeError):
                 pass
             ed.textChanged.connect(lambda k=new, e=ed: self._code_changed(k, e))
+            if m.get("type") == "form":
+                self.tabs.setTabText(self.tabs.indexOf(ed), f"{new} (Code)")
         self.book.vba_modified = True
         self.win.vba_code_changed()
         self.rebuild_tree()
+        return True
 
     def reload_from_book(self):
         """Book replaced (e.g. new file opened)."""
@@ -750,8 +787,108 @@ class VBAEditor(QMainWindow):
             self.tabs.removeTab(self.tabs.indexOf(ed))
             ed.deleteLater()
         self.editors.clear()
+        for k, d in list(self.designers.items()):
+            self.tabs.removeTab(self.tabs.indexOf(d))
+            d.deleteLater()
+        self.designers.clear()
         self.rebuild_tree()
         self._update_title()
+
+    # UserForms ------------------------------------------------------------------
+    def insert_userform(self, name=None):
+        from .. import forms
+        name = name or self._unique_name("UserForm")
+        m = {"name": name, "type": "form", "code": "", "form": forms.new_form(name)}
+        self.book.vba_modules.append(m)
+        self.book.vba_modified = True
+        self.win.vba_code_changed()
+        self.rebuild_tree()
+        self.open_designer(name)
+        return m
+
+    def open_designer(self, name: str):
+        from .userform_designer import FormDesigner
+        m = self.module(name)
+        if m is None or m.get("type") != "form":
+            return None
+        d = self.designers.get(m["name"].lower())
+        if d is None:
+            d = FormDesigner(self, m)
+            self.designers[m["name"].lower()] = d
+            self.tabs.addTab(d, icons.icon("form"), f"{m['name']} (UserForm)")
+        self.tabs.setCurrentWidget(d)
+        d.setFocus()
+        return d
+
+    def open_code(self, name: str, proc: Optional[str] = None):
+        ed = self.open_module(name, code=True)
+        if ed is None or not proc:
+            return ed
+        for kind, pname, params, line in procedures(ed.toPlainText()):
+            if pname.lower() == proc.lower():
+                blk = ed.document().findBlockByNumber(line)  # body line
+                c = QTextCursor(blk)
+                c.movePosition(QTextCursor.EndOfBlock)
+                ed.setTextCursor(c)
+                ed.centerCursor()
+                break
+        ed.setFocus()
+        return ed
+
+    def code_replaced(self, name: str):
+        """Module code changed outside the code editor (designer)."""
+        m = self.module(name)
+        ed = self.editors.get(name.lower())
+        if m is None or ed is None:
+            return
+        if ed.toPlainText() != m.get("code", ""):
+            self._loading = True
+            ed.setPlainText(m.get("code", ""))
+            self._loading = False
+
+    def view_code(self):
+        name = self.current_module_name()
+        d = self.designers.get(name.lower()) if name else None
+        if d is not None:
+            if d.selected:
+                d.view_code()
+            else:
+                self.open_code(name)
+            return
+        it = self.tree.currentItem()
+        n = it.data(0, Qt.UserRole) if it else name
+        if n:
+            self.open_module(n, code=True)
+
+    def view_object(self):
+        it = self.tree.currentItem()
+        n = (it.data(0, Qt.UserRole) if it else None) or self.current_module_name()
+        m = self.module(n) if n else None
+        if m is not None and m.get("type") == "form":
+            self.open_designer(m["name"])
+        elif n:
+            sh = {s.code_name.lower(): s for s in self.book.sheets}.get(n.lower())
+            if sh is not None:
+                self.win.activate_sheet(sh)
+            self._show_main()
+
+    def _tree_menu(self, pos):
+        it = self.tree.itemAt(pos)
+        if it is None or not it.data(0, Qt.UserRole):
+            return
+        self.tree.setCurrentItem(it)
+        from PySide6.QtWidgets import QMenu
+        menu = QMenu(self)
+        menu.addAction(self.a_code)
+        menu.addAction(self.a_obj)
+        menu.addSeparator()
+        menu.addAction(self.a_mod)
+        menu.addAction(self.a_cls)
+        menu.addAction(self.a_form)
+        menu.addSeparator()
+        menu.addAction(self.a_rem)
+        menu.addAction(self.a_exp)
+        menu.popup(self.tree.viewport().mapToGlobal(pos))
 
 
 def parse_vb_file(text: str, path: str = ""):

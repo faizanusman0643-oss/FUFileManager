@@ -264,9 +264,6 @@ class FormRenderer(QObject):
     def user_set(self, name, prop, value):
         if not self.live or self._updating or self._user_set_cb is None:
             return
-        c = self.ctrl(name)
-        if c is not None:
-            c[prop] = value
         self._user_set_cb(name, prop, value)
 
     def clear(self):
@@ -684,11 +681,7 @@ class FormRenderer(QObject):
     def _combo_index(self, name, i):
         if self._updating:
             return
-        w = self.widgets[name]
-        text = w.itemText(i) if i >= 0 else w.currentText()
         self.user_set(name, "list_index", i)
-        self.user_set(name, "value", text.split("\t")[0] if text else text)
-        self.user_set(name, "text", text)
         self.fire(name, "Change")
 
     def _combo_text(self, name, text):
@@ -720,15 +713,9 @@ class FormRenderer(QObject):
             idx = sel.index(True) if True in sel else -1
         else:
             idx = cur_i
-        self.user_set(name, "list_index", idx)
         if ms:
             self.user_set(name, "selected", sel)
-        bc = max(1, int(c.get("bound_column") or 1)) - 1
-        val = None
-        if 0 <= idx < len(rows) and (ms == 0):
-            r = rows[idx]
-            val = r[bc] if bc < len(r) else r[0] if r else None
-        self.user_set(name, "value", val)
+        self.user_set(name, "list_index", idx)
         self.fire(name, "Change")
         self.fire(name, "Click")
         self.fire(name, "AfterUpdate")

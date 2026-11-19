@@ -222,6 +222,178 @@ def new_window(book=None):
     return w
 
 
+CUSTOMER_FORM_CODE = '''Option Explicit
+
+Private Sub UserForm_Initialize()
+    optRetail.Value = True
+End Sub
+
+Private Sub btnOK_Click()
+    If txtName.Text = "" Then
+        MsgBox "Please enter a name.", vbExclamation
+        txtName.SetFocus
+        Exit Sub
+    End If
+    Dim r As Long
+    r = 2
+    Do While Cells(r, 1).Value <> ""
+        r = r + 1
+    Loop
+    Cells(r, 1).Value = txtName.Text
+    Cells(r, 2).Value = txtEmail.Text
+    Cells(r, 3).Value = cboCountry.Value
+    If optRetail.Value Then
+        Cells(r, 4).Value = "Retail"
+    Else
+        Cells(r, 4).Value = "Wholesale"
+    End If
+    Cells(r, 5).Value = chkNewsletter.Value
+    Cells(r, 6).Value = lstProducts.Value
+    Unload Me
+End Sub
+
+Private Sub btnCancel_Click()
+    Unload Me
+End Sub
+'''
+
+CUSTOMER_MACRO = '''Sub EnterCustomer()
+    Range("A1").Value = "Name"
+    Range("B1").Value = "Email"
+    Range("C1").Value = "Country"
+    Range("D1").Value = "Type"
+    Range("E1").Value = "Newsletter"
+    Range("F1").Value = "Product"
+    Range("A1:F1").Font.Bold = True
+    frmCustomer.Show
+End Sub
+
+Sub ShowOrders()
+    frmOrders.Show vbModeless
+End Sub
+'''
+
+
+def build_customer_form(d):
+    """Lay out the 'Customer Entry' form through the designer API."""
+    f = d.form
+    f["caption"] = "Customer Entry"
+    f["width"], f["height"] = 312.0, 276.0
+    d.place_control("Label", 12, 12, 60, 18, name="lblName", caption="Name:")
+    d.place_control("TextBox", 78, 12, 210, 18, name="txtName")
+    d.place_control("Label", 12, 36, 60, 18, name="lblEmail", caption="Email:")
+    d.place_control("TextBox", 78, 36, 210, 18, name="txtEmail")
+    d.place_control("Label", 12, 60, 60, 18, name="lblCountry", caption="Country:")
+    d.place_control("ComboBox", 78, 60, 126, 18, name="cboCountry",
+                    list=["Belgium", "France", "Germany", "Netherlands", "Spain"], style=2)
+    fr = d.place_control("Frame", 12, 90, 132, 60, name="fraType", caption="Customer type")
+    d.place_control("OptionButton", 6, 6, 108, 18, parent=fr["name"], name="optRetail",
+                    caption="Retail")
+    d.place_control("OptionButton", 6, 24, 108, 18, parent=fr["name"], name="optWholesale",
+                    caption="Wholesale")
+    d.place_control("Label", 156, 90, 120, 18, name="lblProducts", caption="Product:")
+    d.place_control("ListBox", 156, 108, 132, 66, name="lstProducts",
+                    list=["Laptop", "Monitor", "Keyboard", "Mouse", "Docking station"])
+    d.place_control("CheckBox", 12, 162, 138, 18, name="chkNewsletter",
+                    caption="Subscribe to newsletter")
+    d.place_control("CommandButton", 156, 210, 60, 24, name="btnOK", caption="OK",
+                    default=True)
+    d.place_control("CommandButton", 228, 210, 60, 24, name="btnCancel", caption="Cancel",
+                    cancel=True)
+
+
+def build_orders_form(d):
+    f = d.form
+    f["caption"] = "Orders"
+    f["width"], f["height"] = 330.0, 246.0
+    mp = d.place_control("MultiPage", 12, 12, 300, 168, name="mpgOrders")
+    d.set_property("pages", [{"name": "pgOrders", "caption": "Open orders"},
+                             {"name": "pgCustomer", "caption": "Customer"},
+                             {"name": "pgNotes", "caption": "Notes"}])
+    d.place_control("ListBox", 6, 6, 282, 108, parent="pgOrders", name="lstOrders",
+                    column_count=3, column_widths="60 pt;150 pt;60 pt",
+                    list=[["10231", "Laptop 14\" (2 pcs)", "1,798.00"],
+                          ["10232", "Monitor 27\"", "189.50"],
+                          ["10240", "Keyboard + mouse set", "49.99"],
+                          ["10244", "Docking station", "129.00"],
+                          ["10251", "Laptop sleeve", "24.90"]], list_index=1)
+    d.place_control("Label", 6, 120, 120, 18, parent="pgOrders", name="lblTotal",
+                    caption="5 open orders")
+    d.place_control("SpinButton", 270, 118, 18, 22, parent="pgOrders", name="spnQty")
+    d.place_control("CommandButton", 252, 192, 60, 24, name="btnClose", caption="Close",
+                    cancel=True)
+    return mp
+
+
+def userform_shots(win):
+    from portable_excel.gui import vba_host
+    book = Workbook()
+    book.active.name = "Customers"
+    book._pe_title = "Customers.xlsm"
+    uwin = new_window(book)
+    uwin.macros_enabled = True
+    ed = uwin.show_vba_editor()
+    ed.resize(W, H)
+    m = ed.insert_userform("frmCustomer")
+    d = ed.designers["frmcustomer"]
+    build_customer_form(d)
+    m["code"] = CUSTOMER_FORM_CODE
+    ed.code_replaced("frmCustomer")
+    ed.insert_module("standard", "Module1", CUSTOMER_MACRO)
+    m2 = ed.insert_userform("frmOrders")
+    d2 = ed.designers["frmorders"]
+    build_orders_form(d2)
+    m2["code"] = "Private Sub btnClose_Click()\n    Unload Me\nEnd Sub\n"
+    ed.open_designer("frmCustomer")
+    d.select(["txtEmail"])
+    pump(5)
+    save(ed.grab(), "21_userform_designer")
+    ed.hide()
+
+    shots = {}
+
+    def interact():
+        try:
+            v = uwin.form_views[-1]
+            r = v.renderer
+            r.widgets["txtName"].setFocus()
+            from PySide6.QtTest import QTest
+            QTest.keyClicks(r.widgets["txtName"], "Anna Peeters")
+            r.widgets["txtEmail"].setFocus()
+            QTest.keyClicks(r.widgets["txtEmail"], "anna.peeters@example.com")
+            r.widgets["cboCountry"].setCurrentIndex(0)
+            r.widgets["optWholesale"].click()
+            r.widgets["chkNewsletter"].click()
+            r.widgets["lstProducts"].setCurrentRow(1)
+            pump(5)
+            shots["22"] = compose_pixmap(uwin, framed(v))
+            r.widgets["btnOK"].click()
+        except Exception as e:  # never hang the script
+            print("  userform interaction failed:", e)
+            for v in uwin.form_views:
+                v.close()
+    QTimer.singleShot(400, interact)
+    uwin.run_macro("EnterCustomer")
+    pump(5)
+    if "22" in shots:
+        save(shots["22"], "22_userform_running")
+    uwin.view.select_range(1, 0, 1, 5)
+    pump(5)
+    save(uwin.grab(), "23_userform_result")
+
+    uwin.run_macro("ShowOrders")
+    pump(5)
+    views = [v for v in uwin.form_views if v.isVisible()]
+    if views:
+        save(compose_pixmap(uwin, framed(views[-1])), "24_userform_multipage")
+        for v in views:
+            v.close()
+    else:
+        print("  frmOrders did not open")
+    uwin.modified = False
+    uwin.close()
+
+
 def main():
     os.makedirs(OUT, exist_ok=True)
     app = create_app(["screenshots"])
@@ -421,6 +593,8 @@ def main():
                     "Formulas were saved as their calculated values."]
     d = win.show_save_warnings(warnings, modal=False)
     dialog_shot(win, d, "20_save_warnings")
+
+    userform_shots(win)
 
     for w in (win, mwin, rwin):
         w.modified = False

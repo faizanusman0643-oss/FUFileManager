@@ -21,8 +21,10 @@ import csv
 import datetime as _dt
 import io
 import json
+import logging
 import os
 import re
+import struct
 import tempfile
 import zipfile
 from typing import Dict, List, Optional
@@ -549,6 +551,703 @@ def _guess_kind(name: str, filename: str, code: str, ole_storages: set,
     return "standard"
 
 
+# ==========================================================================
+# UserForm designers ([MS-OFORMS])
+# ==========================================================================
+# A form module "UserForm1" has a designer storage "UserForm1" next to the
+# VBA storage, holding:
+#   \x03VBFrame  text: Caption, ClientWidth/ClientHeight (twips), StartUpPosition
+#   f            FormControl: form properties + one OleSiteConcrete per control
+#   o            the controls' own property records, back to back; each site's
+#                ObjectStreamSize says how many bytes belong to it
+#   i<ID>        nested storage (own f / o) of a Frame or MultiPage with that ID
+#
+# Every record is "version(2) cb(2) PropMask DataBlock ExtraDataBlock": a mask
+# bit says the property is stored (else it has its default).  DataBlock holds
+# fixed-size values in mask-bit order, each aligned to its own size; strings
+# and arrays store a length there and their bytes in ExtraDataBlock, which
+# also holds the 8-byte size/position pairs, each item padded to 4 bytes.
+_log = logging.getLogger("portable_excel.fileio")
+
+_HM_PT = 72.0 / 2540.0      # HIMETRIC -> points
+
+# kinds: u8 u16 i16 u32 i32 -> data; str / arr -> 4-byte length in data + bytes
+# in extra; pair -> 8 bytes in extra; pic / font -> 2-byte marker in data
+# (object in the stream data); flag -> no data (presence toggles a boolean)
+_FORM_LAYOUT = [
+    (1, "u32", "back_color"), (2, "u32", "fore_color"), (3, "u32", "next_id"),
+    (6, "u32", "bool"), (7, "u8", "border_style"), (8, "u8", "mouse_pointer"),
+    (9, "u8", "scroll_bars"), (10, "pair", "size"), (11, "pair", "logical_size"),
+    (12, "pair", "scroll_pos"), (13, "u32", "group_cnt"), (15, "pic", "mouse_icon"),
+    (16, "u8", "cycle"), (17, "u8", "special_effect"), (18, "u32", "border_color"),
+    (19, "str", "caption"), (20, "font", "font"), (21, "pic", "picture"),
+    (22, "u32", "zoom"), (23, "u8", "picture_alignment"), (24, "flag", "picture_tiling"),
+    (25, "u8", "picture_size_mode"), (26, "u32", "shape_cookie"), (27, "u32", "draw_buffer"),
+]
+_SITE_LAYOUT = [
+    (0, "str", "name"), (1, "str", "tag"), (2, "u32", "id"), (3, "u32", "help_context"),
+    (4, "u32", "bit_flags"), (5, "u32", "object_size"), (6, "i16", "tab_index"),
+    (7, "u16", "clsid_index"), (8, "pair", "position"), (9, "u16", "group_id"),
+    (11, "str", "control_tip_text"), (12, "str", "license_key"),
+    (13, "str", "control_source"), (14, "str", "row_source"),
+]
+_MORPH_LAYOUT = [
+    (0, "u32", "flags"), (1, "u32", "back_color"), (2, "u32", "fore_color"),
+    (3, "u32", "max_length"), (4, "u8", "border_style"), (5, "u8", "scroll_bars"),
+    (6, "u8", "display_style"), (7, "u8", "mouse_pointer"), (8, "pair", "size"),
+    (9, "u16", "password_char"), (10, "u32", "list_width"), (11, "u16", "bound_column"),
+    (12, "i16", "text_column"), (13, "i16", "column_count"), (14, "i16", "list_rows"),
+    (15, "u16", "column_info_count"), (16, "u8", "match_entry"), (17, "u8", "list_style"),
+    (18, "u8", "show_drop_button_when"), (20, "u8", "drop_button_style"),
+    (21, "u8", "multi_select"), (22, "str", "value"), (23, "str", "caption"),
+    (24, "u32", "picture_position"), (25, "u32", "border_color"),
+    (26, "u32", "special_effect"), (27, "pic", "mouse_icon"), (28, "pic", "picture"),
+    (29, "u16", "accelerator"), (32, "str", "group_name"),
+]
+_LABEL_LAYOUT = [
+    (0, "u32", "fore_color"), (1, "u32", "back_color"), (2, "u32", "flags"),
+    (3, "str", "caption"), (4, "u32", "picture_position"), (5, "pair", "size"),
+    (6, "u8", "mouse_pointer"), (7, "u32", "border_color"), (8, "u16", "border_style"),
+    (9, "u16", "special_effect"), (10, "pic", "picture"), (11, "u16", "accelerator"),
+    (12, "pic", "mouse_icon"),
+]
+_BUTTON_LAYOUT = [
+    (0, "u32", "fore_color"), (1, "u32", "back_color"), (2, "u32", "flags"),
+    (3, "str", "caption"), (4, "u32", "picture_position"), (5, "pair", "size"),
+    (6, "u8", "mouse_pointer"), (7, "pic", "picture"), (8, "u16", "accelerator"),
+    (9, "flag", "no_take_focus"), (10, "pic", "mouse_icon"),
+]
+_IMAGE_LAYOUT = [
+    (2, "flag", "auto_size"), (3, "u32", "border_color"), (4, "u32", "back_color"),
+    (5, "u8", "border_style"), (6, "u8", "mouse_pointer"), (7, "u8", "picture_size_mode"),
+    (8, "u8", "special_effect"), (9, "pair", "size"), (10, "pic", "picture"),
+    (11, "u8", "picture_alignment"), (12, "flag", "picture_tiling"), (13, "u32", "flags"),
+    (14, "pic", "mouse_icon"),
+]
+_SPIN_LAYOUT = [
+    (0, "u32", "fore_color"), (1, "u32", "back_color"), (2, "u32", "flags"),
+    (3, "pair", "size"), (5, "i32", "min"), (6, "i32", "max"), (7, "i32", "position"),
+    (8, "u32", "prev_enabled"), (9, "u32", "next_enabled"), (10, "i32", "small_change"),
+    (11, "i32", "orientation"), (12, "i32", "delay"), (13, "pic", "mouse_icon"),
+    (14, "u8", "mouse_pointer"),
+]
+_SCROLL_LAYOUT = [
+    (0, "u32", "fore_color"), (1, "u32", "back_color"), (2, "u32", "flags"),
+    (3, "pair", "size"), (4, "u8", "mouse_pointer"), (5, "i32", "min"), (6, "i32", "max"),
+    (7, "i32", "position"), (9, "u32", "prev_enabled"), (10, "u32", "next_enabled"),
+    (11, "i32", "small_change"), (12, "i32", "large_change"), (13, "i32", "orientation"),
+    (14, "i16", "proportional_thumb"), (15, "i32", "delay"), (16, "pic", "mouse_icon"),
+]
+_TABSTRIP_LAYOUT = [
+    (0, "i32", "list_index"), (1, "u32", "back_color"), (2, "u32", "fore_color"), (4, "pair", "size"),
+    (5, "arr", "items"), (6, "u8", "mouse_pointer"), (8, "u32", "tab_orientation"),
+    (9, "u32", "tab_style"), (10, "flag", "multi_row"), (11, "u32", "tab_fixed_width"),
+    (12, "u32", "tab_fixed_height"), (13, "flag", "tooltips"), (15, "arr", "tip_strings"),
+    (17, "arr", "names"), (18, "u32", "flags"), (19, "flag", "new_version"),
+    (20, "u32", "tabs_allocated"), (21, "arr", "tags"), (22, "u32", "tab_data"),
+    (23, "arr", "accelerators"), (24, "pic", "mouse_icon"),
+]
+_TEXTPROPS_LAYOUT = [
+    (0, "str", "font_name"), (1, "u32", "font_effects"), (2, "u32", "font_height"),
+    (4, "u8", "charset"), (5, "u8", "pitch_family"), (6, "u8", "paragraph_align"),
+    (7, "u16", "font_weight"),
+]
+_FIXED = {"u8": ("<B", 1), "u16": ("<H", 2), "i16": ("<h", 2), "u32": ("<I", 4),
+          "i32": ("<i", 4), "str": ("<I", 4), "arr": ("<I", 4), "pic": ("<H", 2),
+          "font": ("<H", 2)}
+
+# ClsidCacheIndex -> control type ([MS-OFORMS] 2.4.5); 15 = generic MorphData
+_CLSID_TYPES = {7: "Page", 12: "Image", 14: "Frame", 15: "MorphData", 16: "SpinButton",
+                17: "CommandButton", 18: "TabStrip", 21: "Label", 23: "TextBox",
+                24: "ListBox", 25: "ComboBox", 26: "CheckBox", 27: "OptionButton",
+                28: "ToggleButton", 47: "ScrollBar", 57: "MultiPage"}
+_DISPLAY_STYLE_TYPES = {1: "TextBox", 2: "ListBox", 3: "ComboBox", 4: "CheckBox",
+                        5: "OptionButton", 6: "ToggleButton", 7: "ComboBox"}
+_MORPH_DEFAULT_STYLE = {"TextBox": 1, "ListBox": 2, "ComboBox": 3, "CheckBox": 4,
+                        "OptionButton": 5, "ToggleButton": 6}
+
+# Windows 10 default system colours, by COLOR_* index (OLE_COLOR 0x800000xx)
+_SYS_COLORS = {
+    0: "#C8C8C8", 1: "#000000", 2: "#99B4D1", 3: "#BFCDDB", 4: "#F0F0F0", 5: "#FFFFFF",
+    6: "#646464", 7: "#000000", 8: "#000000", 9: "#000000", 10: "#B4B4B4", 11: "#F4F7FC",
+    12: "#ABABAB", 13: "#0078D7", 14: "#FFFFFF", 15: "#F0F0F0", 16: "#A0A0A0",
+    17: "#6D6D6D", 18: "#000000", 19: "#000000", 20: "#FFFFFF", 21: "#696969",
+    22: "#E3E3E3", 23: "#000000", 24: "#FFFFE1", 26: "#0066CC", 27: "#B9D1EA",
+    28: "#D7E4F2", 29: "#3399FF", 30: "#F0F0F0",
+}
+_STDFONT_GUID = bytes.fromhex("0352e30b918fce119de300aa004bb851")    # {0BE35203-8F91-11CE-9DE3-00AA004BB851}
+_TEXTPROPS_GUID = bytes.fromhex("2009c2af4edace11b94300aa006887b4")  # {AFC20920-DA4E-11CE-B943-00AA006887B4}
+_STDPIC_GUID = bytes.fromhex("0452e30b918fce119de300aa004bb851")     # {0BE35204-...}
+
+# VariousPropertyBits (shared meaning across controls)
+_VPB_ENABLED = 0x00000002
+_VPB_LOCKED = 0x00000004
+_VPB_OPAQUE = 0x00000008
+_VPB_MATCH_REQUIRED = 0x00001000
+_VPB_WORD_WRAP = 0x00800000
+_VPB_AUTO_SIZE = 0x10000000
+_VPB_MULTI_LINE = 0x80000000
+_DEFAULT_FLAGS = {"morph": 0x2C80081B, "label": 0x0080001B, "button": 0x0000001B,
+                  "image": 0x0000001B, "spin": 0x0000001B, "scroll": 0x0000001B,
+                  "tabstrip": 0x0000001B}
+# site BitFlags
+_SITE_TABSTOP, _SITE_VISIBLE, _SITE_DEFAULT, _SITE_CANCEL = 0x1, 0x2, 0x4, 0x8
+_SITE_DEFAULT_FLAGS = 0x33
+
+
+class _FormParseError(Exception):
+    pass
+
+
+def ole_color_to_hex(v) -> Optional[str]:
+    """OLE_COLOR (0x00BBGGRR, or 0x800000nn system colour) -> '#RRGGBB'."""
+    if v is None:
+        return None
+    v = int(v) & 0xFFFFFFFF
+    if v & 0x80000000:
+        return _SYS_COLORS.get(v & 0xFF, "#000000")
+    r, g, b = v & 0xFF, (v >> 8) & 0xFF, (v >> 16) & 0xFF
+    return f"#{r:02X}{g:02X}{b:02X}"
+
+
+def _pt(himetric) -> float:
+    """HIMETRIC -> points, preferring the shortest value that maps back to the
+    same HIMETRIC integer (VBE stores round(points * 2540 / 72))."""
+    exact = himetric * _HM_PT
+    for nd in (0, 1, 2):
+        cand = round(exact, nd)
+        if round(cand / _HM_PT) == himetric:
+            return float(cand)
+    return round(exact, 2)
+
+
+def _u(fmt: str, buf: bytes, pos: int):
+    size = struct.calcsize(fmt)
+    if pos < 0 or pos + size > len(buf):
+        raise _FormParseError(f"truncated record at {pos}")
+    return struct.unpack_from(fmt, buf, pos)[0]
+
+
+def _align(pos: int, base: int, n: int) -> int:
+    off = (pos - base) % n
+    return pos + (n - off if off else 0)
+
+
+def _read_ms_string(buf: bytes, pos: int, count: int, compressed: bool) -> str:
+    raw = buf[pos:pos + count]
+    if len(raw) < count:
+        raise _FormParseError("truncated string")
+    if compressed:
+        return raw.decode("latin-1")
+    return raw.decode("utf-16-le", errors="replace")
+
+
+def _parse_props(buf: bytes, start: int, end: int, mask: int, layout) -> dict:
+    """Decode one DataBlock + ExtraDataBlock (start = just after PropMask,
+    end = end of the record as given by its cb field)."""
+    vals: dict = {}
+    extras = []
+    pos = start
+    for bit, kind, key in layout:
+        if not (mask >> bit) & 1:
+            continue
+        if kind == "flag":
+            vals[key] = True
+            continue
+        if kind == "pair":
+            extras.append((key, "pair", None))
+            continue
+        fmt, size = _FIXED[kind]
+        pos = _align(pos, start, size)
+        v = _u(fmt, buf, pos)
+        pos += size
+        if kind == "str":
+            extras.append((key, "str", (v & 0x7FFFFFFF, bool(v & 0x80000000))))
+        elif kind == "arr":
+            extras.append((key, "arr", v))
+        elif kind in ("pic", "font"):
+            vals[key] = True
+        else:
+            vals[key] = v
+    data_end = _align(pos, start, 4)
+    extra_size = 0
+    for _key, kind, aux in extras:
+        if kind == "pair":
+            extra_size += 8
+        elif kind == "str":
+            extra_size += _align(aux[0], 0, 4)
+        else:
+            extra_size += _align(aux, 0, 4)
+    # The extra block ends the record; locating it from the end tolerates
+    # DataBlock fields we do not know about.
+    epos = end - extra_size if end - extra_size >= data_end else data_end
+    for key, kind, aux in extras:
+        if kind == "pair":
+            vals[key] = (_u("<i", buf, epos), _u("<i", buf, epos + 4))
+            epos += 8
+        elif kind == "str":
+            n, comp = aux
+            vals[key] = _read_ms_string(buf, epos, n, comp)
+            epos += _align(n, 0, 4)
+        else:
+            items, p, stop = [], epos, epos + aux
+            while p + 4 <= stop:
+                v = _u("<I", buf, p)
+                n = v & 0x7FFFFFFF
+                p += 4
+                items.append(_read_ms_string(buf, p, n, bool(v & 0x80000000)))
+                p += _align(n, 0, 4)
+            vals[key] = items
+            epos += _align(aux, 0, 4)
+    return vals
+
+
+def _record(buf: bytes, pos: int, mask_fmt: str = "<I"):
+    """-> (mask, data_start, record_end) of a versioned property record."""
+    cb = _u("<H", buf, pos + 2)
+    mask = _u(mask_fmt, buf, pos + 4)
+    end = pos + 4 + cb
+    if end > len(buf):
+        raise _FormParseError("record exceeds stream")
+    return mask, pos + 4 + struct.calcsize(mask_fmt), end
+
+
+def _skip_picture(buf: bytes, pos: int, keep: bool = False):
+    """GuidAndPicture -> (new_pos, picture bytes or None)."""
+    pos += 16  # GUID (StdPicture)
+    pre = _u("<I", buf, pos)
+    size = _u("<I", buf, pos + 4)
+    if pre != 0x0000746C:
+        raise _FormParseError("bad StdPicture preamble")
+    data = buf[pos + 8:pos + 8 + size] if keep else None
+    return pos + 8 + size, data
+
+
+def _text_props(buf: bytes, pos: int):
+    """TextProps -> (font dict, new_pos)."""
+    mask, start, end = _record(buf, pos)
+    v = _parse_props(buf, start, end, mask, _TEXTPROPS_LAYOUT)
+    font: dict = {}
+    if v.get("font_name"):
+        font["font_name"] = v["font_name"]
+    if "font_height" in v:
+        font["font_size"] = round(v["font_height"] / 20.0, 2)
+    eff = v.get("font_effects", 0)
+    font["bold"] = bool(eff & 1) or v.get("font_weight", 400) >= 700
+    font["italic"] = bool(eff & 2)
+    font["underline"] = bool(eff & 4)
+    if "paragraph_align" in v:  # 1 left, 2 right, 3 center -> fmTextAlign
+        font["text_align"] = {1: 1, 2: 3, 3: 2}.get(v["paragraph_align"], 1)
+    return font, end
+
+
+def _guid_and_font(buf: bytes, pos: int):
+    guid = buf[pos:pos + 16]
+    pos += 16
+    if guid == _STDFONT_GUID:
+        # StdFont: version(1) charset(2) flags(1) weight(2) height(4, pt*10000) len(1) face
+        flags = _u("<B", buf, pos + 3)
+        weight = _u("<H", buf, pos + 4)
+        height = _u("<I", buf, pos + 6)
+        n = _u("<B", buf, pos + 10)
+        face = buf[pos + 11:pos + 11 + n].decode("latin-1")
+        return ({"font_name": face, "font_size": round(height / 10000.0, 2),
+                 "bold": weight >= 700, "italic": bool(flags & 2),
+                 "underline": bool(flags & 4)}, pos + 11 + n)
+    if guid == _TEXTPROPS_GUID:
+        return _text_props(buf, pos)
+    raise _FormParseError("unknown font GUID")
+
+
+def _parse_form_control(f: bytes) -> dict:
+    """FormControl ("f" stream) -> {"props": {...}, "font": {...}, "sites": [...]}."""
+    if len(f) < 8 or f[1] != 4:
+        raise _FormParseError("not a FormControl")
+    mask, start, end = _record(f, 0)
+    props = _parse_props(f, start, end, mask, _FORM_LAYOUT)
+    pos = end
+    font: dict = {}
+    if props.get("mouse_icon"):
+        pos, _ = _skip_picture(f, pos)
+    if props.get("font"):
+        font, pos = _guid_and_font(f, pos)
+    if props.get("picture"):
+        pos, _ = _skip_picture(f, pos)
+    if not props.get("bool", 0x4) & 0x8000:  # FORM_FLAG_DONTSAVECLASSTABLE clear
+        n = _u("<H", f, pos)
+        pos += 2
+        for _ in range(n):  # SiteClassInfo: version(2) cb(2) data
+            pos += 4 + _u("<H", f, pos + 2)
+    sites = []
+    if pos + 8 <= len(f):
+        count = _u("<I", f, pos)
+        pos += 8  # CountOfSites, CountOfBytes
+        base = pos
+        remaining = count
+        while remaining > 0:
+            tc = _u("<B", f, pos + 1)
+            pos += 2
+            if tc & 0x80:
+                n = tc & 0x7F
+                pos += 1
+            else:
+                n = 1
+            if n == 0:
+                break
+            remaining -= n
+        pos = _align(pos, base, 4)
+        for _ in range(count):
+            mask_s, sstart, send = _record(f, pos)
+            site = _parse_props(f, sstart, send, mask_s, _SITE_LAYOUT)
+            site.setdefault("bit_flags", _SITE_DEFAULT_FLAGS)
+            site.setdefault("object_size", 0)
+            site.setdefault("clsid_index", 0x7FFF)
+            site.setdefault("id", 0)
+            site.setdefault("tab_index", -1)
+            sites.append(site)
+            pos = send
+    return {"props": props, "font": font, "sites": sites}
+
+
+def _common_visual(v: dict, kind: str) -> dict:
+    out: dict = {}
+    if "fore_color" in v:
+        out["fore_color"] = ole_color_to_hex(v["fore_color"])
+    if "back_color" in v:
+        out["back_color"] = ole_color_to_hex(v["back_color"])
+    flags = v.get("flags", _DEFAULT_FLAGS[kind])
+    out["enabled"] = bool(flags & _VPB_ENABLED)
+    if kind in ("morph", "label", "button", "image"):
+        out["back_style"] = 1 if flags & _VPB_OPAQUE else 0
+    if kind in ("morph", "label", "button"):
+        out["word_wrap"] = bool(flags & _VPB_WORD_WRAP)
+        out["auto_size"] = bool(flags & _VPB_AUTO_SIZE)
+    if kind == "morph":
+        out["locked"] = bool(flags & _VPB_LOCKED)
+    if "size" in v:
+        out["width"], out["height"] = _pt(v["size"][0]), _pt(v["size"][1])
+    if v.get("accelerator"):
+        out["accelerator"] = chr(v["accelerator"])
+    return out
+
+
+def _stream_tail(buf: bytes, pos: int, v: dict, order, text: bool, keep_picture=False):
+    """Consume pictures (in `order`) and TextProps after a control record."""
+    font, picture = {}, None
+    for key in order:
+        if v.get(key):
+            pos, data = _skip_picture(buf, pos, keep=keep_picture and key == "picture")
+            if data is not None:
+                picture = data
+    if text and pos + 4 <= len(buf):
+        font, pos = _text_props(buf, pos)
+    return font, picture, pos
+
+
+def _picture_b64(data: Optional[bytes]) -> Optional[str]:
+    if not data:
+        return None
+    if data[:2] == b"BM" or data[:8] == b"\x89PNG\r\n\x1a\n" or data[:3] in (b"GIF", b"\xff\xd8\xff"):
+        import base64
+        return base64.b64encode(data).decode("ascii")
+    return None
+
+
+def _parse_control_object(ctype: str, o: bytes) -> dict:
+    """Decode one control's record from the "o" stream -> CONTROL_DICT fields."""
+    out: dict = {}
+    if ctype in _MORPH_DEFAULT_STYLE or ctype == "MorphData":
+        mask, start, end = _record(o, 0, "<Q")
+        v = _parse_props(o, start, end, mask, _MORPH_LAYOUT)
+        style = v.get("display_style", _MORPH_DEFAULT_STYLE.get(ctype, 1))
+        if ctype == "MorphData":
+            ctype = _DISPLAY_STYLE_TYPES.get(style, "TextBox")
+        out.update(_common_visual(v, "morph"))
+        flags = v.get("flags", _DEFAULT_FLAGS["morph"])
+        value = v.get("value", "")
+        if ctype == "TextBox":
+            out.update(value=value, text=value, multi_line=bool(flags & _VPB_MULTI_LINE),
+                       max_length=v.get("max_length", 0), scroll_bars=v.get("scroll_bars", 0),
+                       password_char=chr(v["password_char"]) if v.get("password_char") else "")
+        elif ctype in ("CheckBox", "OptionButton", "ToggleButton"):
+            out["caption"] = v.get("caption", "")
+            out["value"] = value.strip() not in ("", "0")
+            if ctype == "OptionButton":
+                out["group_name"] = v.get("group_name", "")
+        else:  # ComboBox / ListBox
+            out.update(column_count=v.get("column_count", 1),
+                       bound_column=v.get("bound_column", 1),
+                       list_style=v.get("list_style", 0))
+            if ctype == "ComboBox":
+                out.update(value=value, text=value, style=2 if style == 7 else 0,
+                           match_required=bool(flags & _VPB_MATCH_REQUIRED),
+                           max_length=v.get("max_length", 0))
+            else:
+                out.update(value=value if value != "" else None,
+                           multi_select=v.get("multi_select", 0))
+        font, picture, _ = _stream_tail(o, end, v, ("mouse_icon", "picture"), True)
+    elif ctype == "Label":
+        mask, start, end = _record(o, 0)
+        v = _parse_props(o, start, end, mask, _LABEL_LAYOUT)
+        out.update(_common_visual(v, "label"))
+        out["caption"] = v.get("caption", "")
+        font, _, _ = _stream_tail(o, end, v, ("picture", "mouse_icon"), True)
+    elif ctype == "CommandButton":
+        mask, start, end = _record(o, 0)
+        v = _parse_props(o, start, end, mask, _BUTTON_LAYOUT)
+        out.update(_common_visual(v, "button"))
+        out["caption"] = v.get("caption", "")
+        out["take_focus_on_click"] = not v.get("no_take_focus", False)
+        font, _, _ = _stream_tail(o, end, v, ("picture", "mouse_icon"), True)
+    elif ctype == "Image":
+        mask, start, end = _record(o, 0)
+        v = _parse_props(o, start, end, mask, _IMAGE_LAYOUT)
+        out.update(_common_visual(v, "image"))
+        out["picture_size_mode"] = v.get("picture_size_mode", 0)
+        out["auto_size"] = bool(v.get("auto_size"))
+        font, picture, _ = _stream_tail(o, end, v, ("picture", "mouse_icon"), False, True)
+        out["picture"] = _picture_b64(picture)
+    elif ctype in ("SpinButton", "ScrollBar"):
+        layout, kind = (_SPIN_LAYOUT, "spin") if ctype == "SpinButton" else (_SCROLL_LAYOUT, "scroll")
+        mask, start, end = _record(o, 0)
+        v = _parse_props(o, start, end, mask, layout)
+        out.update(_common_visual(v, kind))
+        out.update(min=v.get("min", 0), max=v.get("max", 100 if ctype == "SpinButton" else 32767),
+                   value=v.get("position", 0), small_change=v.get("small_change", 1),
+                   orientation=v.get("orientation", -1))
+        if ctype == "ScrollBar":
+            out["large_change"] = v.get("large_change", 1)
+        font = {}
+    elif ctype == "TabStrip":
+        mask, start, end = _record(o, 0)
+        v = _parse_props(o, start, end, mask, _TABSTRIP_LAYOUT)
+        out.update(_common_visual(v, "tabstrip"))
+        items = v.get("items", [])
+        names = v.get("names", [])
+        out["tabs"] = [{"name": names[i] if i < len(names) and names[i] else f"Tab{i + 1}",
+                        "caption": cap} for i, cap in enumerate(items)]
+        out["value"] = max(v.get("list_index", 0), 0)
+        font, _, _ = _stream_tail(o, end, v, ("mouse_icon",), True)
+    else:
+        return {}
+    out.update({k: val for k, val in font.items() if k in
+                ("font_name", "font_size", "bold", "italic", "underline", "text_align")})
+    out["type"] = ctype
+    return out
+
+
+def _child_storage(ole, path: List[str], site_id: int) -> Optional[List[str]]:
+    for entry in ole.listdir(streams=False, storages=True):
+        if len(entry) == len(path) + 1 and [e.lower() for e in entry[:-1]] == [p.lower() for p in path]:
+            nm = entry[-1]
+            if nm[:1].lower() == "i" and nm[1:].isdigit() and int(nm[1:]) == site_id:
+                return entry
+    return None
+
+
+def _read_stream(ole, path: List[str], name: str) -> bytes:
+    p = path + [name]
+    return ole.openstream(p).read() if ole.exists("/".join(p)) else b""
+
+
+def _parse_container(ole, path: List[str], parent: Optional[str], controls: list,
+                     depth: int = 0) -> dict:
+    """Parse the f/o streams of `path` (form, Frame or MultiPage page); append
+    the controls (recursively) to `controls`. Returns the FormControl info."""
+    fc = _parse_form_control(_read_stream(ole, path, "f"))
+    o = _read_stream(ole, path, "o")
+    pos = 0
+    for site in fc["sites"]:
+        size = site["object_size"]
+        chunk = o[pos:pos + size]
+        pos += size
+        ctype = _CLSID_TYPES.get(site["clsid_index"])
+        name = site.get("name") or ""
+        if ctype is None:
+            _log.warning("UserForm control %r: unsupported control type (class index %s) skipped",
+                         name, site["clsid_index"])
+            continue
+        flags = site["bit_flags"]
+        ctrl = {"type": ctype, "name": name, "parent": parent,
+                "tab_index": max(site["tab_index"], 0),
+                "tab_stop": bool(flags & _SITE_TABSTOP),
+                "visible": bool(flags & _SITE_VISIBLE)}
+        if "position" in site:
+            ctrl["left"], ctrl["top"] = _pt(site["position"][0]), _pt(site["position"][1])
+        else:
+            ctrl["left"] = ctrl["top"] = 0.0
+        for key in ("tag", "control_tip_text"):
+            if site.get(key):
+                ctrl[key] = site[key]
+        for key in ("control_source", "row_source"):
+            if site.get(key):
+                ctrl[key] = site[key]
+        if ctype == "CommandButton":
+            ctrl["default"] = bool(flags & _SITE_DEFAULT)
+            ctrl["cancel"] = bool(flags & _SITE_CANCEL)
+        if chunk:
+            try:
+                ctrl.update(_parse_control_object(ctype, chunk))
+            except Exception as exc:  # keep the control with site data only
+                _log.warning("UserForm control %r: cannot decode properties (%s)", name, exc)
+                if ctype == "MorphData":
+                    ctrl["type"] = "TextBox"
+        elif ctype == "MorphData":
+            ctrl["type"] = "TextBox"
+        if ctype in ("Frame", "MultiPage", "Page") and depth < 16:
+            sub = _child_storage(ole, path, site["id"])
+            if sub is not None:
+                try:
+                    if ctype == "MultiPage":
+                        _parse_multipage(ole, list(sub), ctrl, controls, depth + 1)
+                        continue
+                    insert_at = len(controls)
+                    info = _parse_container(ole, list(sub), name, controls, depth + 1)
+                    p = info["props"]
+                    if "size" in p:
+                        ctrl["width"], ctrl["height"] = _pt(p["size"][0]), _pt(p["size"][1])
+                    if "caption" in p:
+                        ctrl["caption"] = p["caption"]
+                    _apply_container_look(ctrl, info)
+                    controls.insert(insert_at, ctrl)
+                    continue
+                except Exception as exc:
+                    _log.warning("UserForm %s %r: cannot decode contents (%s)", ctype, name, exc)
+        if ctype == "Page":  # a page outside a MultiPage: keep as a Frame
+            ctrl["type"] = "Frame"
+        if not any(c is ctrl for c in controls):
+            controls.append(ctrl)
+    return fc
+
+
+def _apply_container_look(ctrl: dict, info: dict) -> None:
+    p = info["props"]
+    if "back_color" in p:
+        ctrl["back_color"] = ole_color_to_hex(p["back_color"])
+    if "fore_color" in p:
+        ctrl["fore_color"] = ole_color_to_hex(p["fore_color"])
+    for k in ("font_name", "font_size", "bold", "italic", "underline"):
+        if k in info["font"]:
+            ctrl[k] = info["font"][k]
+
+
+def _parse_multipage(ole, path: List[str], ctrl: dict, controls: list, depth: int) -> None:
+    """MultiPage storage: its f holds a TabStrip site plus one site per page,
+    its o the TabStrip (page captions = tab items), each page an i<ID> storage."""
+    fc = _parse_form_control(_read_stream(ole, path, "f"))
+    o = _read_stream(ole, path, "o")
+    p = fc["props"]
+    if "size" in p:
+        ctrl["width"], ctrl["height"] = _pt(p["size"][0]), _pt(p["size"][1])
+    _apply_container_look(ctrl, fc)
+    captions: List[str] = []
+    pos = 0
+    pages = []
+    for site in fc["sites"]:
+        size = site["object_size"]
+        chunk = o[pos:pos + size]
+        pos += size
+        if site["clsid_index"] == 18 and chunk:
+            try:
+                captions = [t["caption"] for t in _parse_control_object("TabStrip", chunk)["tabs"]]
+            except Exception as exc:
+                _log.warning("MultiPage %r: cannot decode tabs (%s)", ctrl["name"], exc)
+        elif site["clsid_index"] == 7:
+            pages.append(site)
+    pages.sort(key=lambda s: s["tab_index"])
+    ctrl["pages"] = []
+    controls.append(ctrl)
+    for i, site in enumerate(pages):
+        pname = site.get("name") or f"Page{i + 1}"
+        cap = captions[i] if i < len(captions) else pname
+        ctrl["pages"].append({"name": pname, "caption": cap})
+        sub = _child_storage(ole, path, site["id"])
+        if sub is not None:
+            try:
+                _parse_container(ole, list(sub), pname, controls, depth + 1)
+            except Exception as exc:
+                _log.warning("MultiPage page %r: cannot decode (%s)", pname, exc)
+    ctrl.setdefault("value", 0)
+
+
+_VBFRAME_RE = re.compile(r'^\s*(\w+)\s*=\s*(?:"((?:[^"]|"")*)"|(\S+))', re.M)
+
+
+def _parse_vbframe(text: str) -> dict:
+    out: dict = {}
+    for m in _VBFRAME_RE.finditer(text):
+        key = m.group(1)
+        out[key] = m.group(2).replace('""', '"') if m.group(2) is not None else m.group(3)
+    return out
+
+
+# Border/title-bar allowance between UserForm.Width/Height and the client
+# area (VBE defaults: ClientWidth 4560 twips for Width 240, ClientHeight 3015
+# for Height 180).
+_FORM_EXTRA_W = 12.0
+_FORM_EXTRA_H = 29.25
+
+
+def parse_form_designer(ole, storage, name: str = "UserForm1") -> dict:
+    """Parse a UserForm designer storage of an open olefile.OleFileIO into a
+    normalized FORM_DICT (see forms.py). Never raises: on malformed data it
+    logs a warning and returns what it could decode (at least the caption)."""
+    from .forms import new_form, normalize_form
+    path = [storage] if isinstance(storage, str) else list(storage)
+    form = new_form(name)
+    form["back_color"] = "#F0F0F0"
+    form["fore_color"] = "#000000"
+    client = {}
+    caption_from_vbframe = False
+    try:
+        raw = _read_stream(ole, path, "\x03VBFrame")
+        if raw:
+            vb = _parse_vbframe(raw.decode("cp1252", errors="replace"))
+            if "Caption" in vb:
+                form["caption"] = vb["Caption"]
+                caption_from_vbframe = True
+            for key in ("ClientWidth", "ClientHeight", "Width", "Height", "StartUpPosition"):
+                if key in vb:
+                    try:
+                        client[key] = float(vb[key])
+                    except ValueError:
+                        pass
+    except Exception as exc:
+        _log.warning("UserForm %s: cannot read VBFrame (%s)", name, exc)
+    if "ClientWidth" in client:
+        form["width"] = round(client["ClientWidth"] / 20.0 + _FORM_EXTRA_W, 2)
+    elif "Width" in client:
+        form["width"] = round(client["Width"] / 20.0, 2)
+    if "ClientHeight" in client:
+        form["height"] = round(client["ClientHeight"] / 20.0 + _FORM_EXTRA_H, 2)
+    elif "Height" in client:
+        form["height"] = round(client["Height"] / 20.0, 2)
+    if "StartUpPosition" in client:
+        form["start_up_position"] = int(client["StartUpPosition"])
+    controls: list = []
+    try:
+        info = _parse_container(ole, path, None, controls)
+        p = info["props"]
+        if "size" in p and "ClientWidth" not in client:
+            form["width"] = round(_pt(p["size"][0]) + _FORM_EXTRA_W, 2)
+            form["height"] = round(_pt(p["size"][1]) + _FORM_EXTRA_H, 2)
+        if "back_color" in p:
+            form["back_color"] = ole_color_to_hex(p["back_color"])
+        if "fore_color" in p:
+            form["fore_color"] = ole_color_to_hex(p["fore_color"])
+        if "caption" in p and not caption_from_vbframe:
+            form["caption"] = p["caption"]
+        font = info["font"]
+        if font.get("font_name"):
+            form["font_name"] = font["font_name"]
+        if font.get("font_size"):
+            form["font_size"] = font["font_size"]
+    except Exception as exc:
+        _log.warning("UserForm %s: cannot decode the designer (%s); controls dropped", name, exc)
+    form["controls"] = controls
+    return normalize_form(form)
+
+
 def extract_vba_modules(path_or_bytes) -> List[dict]:
     """Extract VBA module source from an .xlsm path/bytes or vbaProject.bin bytes.
 
@@ -565,11 +1264,14 @@ def extract_vba_modules(path_or_bytes) -> List[dict]:
 
     kinds: Dict[str, str] = {}
     storages: set = set()
+    storage_names: Dict[str, str] = {}
+    ole = None
     try:
         ole = olefile.OleFileIO(io.BytesIO(vbin))
         for entry in ole.listdir(streams=False, storages=True):
             if len(entry) == 1:
                 storages.add(entry[0].lower())
+                storage_names[entry[0].lower()] = entry[0]
         root = ""
         if not ole.exists("PROJECT"):
             for entry in ole.listdir():
@@ -577,7 +1279,6 @@ def extract_vba_modules(path_or_bytes) -> List[dict]:
                     root = "/".join(entry[:-1])
                     break
         kinds = _project_kinds(ole, root)
-        ole.close()
     except Exception:
         pass
     storages.discard("vba")
@@ -602,13 +1303,33 @@ def extract_vba_modules(path_or_bytes) -> List[dict]:
             seen.add(name.lower())
             code = code.replace("\r\n", "\n").replace("\r", "\n")
             kind = _guess_kind(name, vba_filename or "", code, storages, kinds)
-            out.append({"name": name, "type": kind, "code": code})
+            mod = {"name": name, "type": kind, "code": code}
+            if kind == "form":
+                mod["form"] = _form_for_module(ole, storage_names.get(name.lower()), name)
+            out.append(mod)
     finally:
         try:
             parser.close()
         except Exception:
             pass
+        if ole is not None:
+            try:
+                ole.close()
+            except Exception:
+                pass
     return out
+
+
+def _form_for_module(ole, storage: Optional[str], name: str) -> dict:
+    from .forms import new_form, normalize_form
+    if ole is None or storage is None:
+        _log.warning("UserForm %s: designer storage not found; using an empty form", name)
+        return normalize_form(new_form(name))
+    try:
+        return parse_form_designer(ole, storage, name)
+    except Exception as exc:  # parse_form_designer is defensive; belt and braces
+        _log.warning("UserForm %s: cannot read the designer (%s)", name, exc)
+        return normalize_form(new_form(name))
 
 
 # ==========================================================================
