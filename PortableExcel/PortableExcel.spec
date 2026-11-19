@@ -11,6 +11,7 @@ a = Analysis(
     ["run.py"],
     pathex=["."],
     hiddenimports=hidden,
+    datas=[("portable_excel/gui/fonts", "portable_excel/gui/fonts")],
     excludes=["tkinter", "PySide6.QtWebEngineCore", "PySide6.QtQml", "PySide6.QtQuick",
               "PySide6.Qt3DCore", "PySide6.QtMultimedia", "PySide6.QtPdf"],
 )
