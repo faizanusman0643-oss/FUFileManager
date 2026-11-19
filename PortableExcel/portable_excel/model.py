@@ -208,6 +208,7 @@ class Sheet:
         #   row, col: anchor cell (0-based); dx, dy: offset in px from that cell's top-left
         #   width, height: size in px
         #   data: PNG bytes; fmt: "png" (others converted to PNG on load)
+        #   descr: optional alt text (from/to the xlsx picture)
         #   barcode: None, or {"symbology": "code128"|"code39"|"ean13"|"ean8"|"upca"
         #                      |"itf"|"qr"|"datamatrix", "source": "A2" (cell on this
         #                      sheet whose displayed value is encoded) or None,
@@ -281,6 +282,7 @@ class Workbook:
         self.vba_project_bin: Optional[bytes] = None
         self.vba_modified = False
         self.defined_names: Dict[str, str] = {}  # name -> "Sheet1!$A$1:$B$5"
+        self.load_warnings: List[str] = []  # set by fileio.load_workbook; GUI shows them
         # listeners called as fn(sheet, r, c) after a cell changes through
         # set_cell(); the GUI uses this to refresh, the VBA host for
         # Worksheet_Change events.

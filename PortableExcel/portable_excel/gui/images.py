@@ -400,8 +400,10 @@ class ImageController:
         if bc and mod is not None:
             try:
                 text = self.win.barcode_text(self.sheet, bc)
-                _png, w, h = mod.render_png(bc["symbology"], text, bc.get("module_px", 2),
-                                            bc.get("bar_height_px", 60), bc.get("show_text", True))
+                _png, w, h = mod.render_png(bc["symbology"], text,
+                                            module_px=bc.get("module_px", 2),
+                                            bar_height_px=bc.get("bar_height_px", 60),
+                                            show_text=bc.get("show_text", True))
             except Exception:
                 w = h = None
         if w is None:
@@ -626,7 +628,7 @@ class BarcodeDialog(QDialog):
             rc = parse_a1(self.source.text())
             if rc is None:
                 return None
-            return self.win.engine.display_text(self.win.book.active, *rc)
+            return self.win.cell_text(self.win.book.active, rc)
         return self.text.text()
 
     def update_preview(self, *_):
@@ -655,9 +657,9 @@ class BarcodeDialog(QDialog):
         self.value_label.setText(shown)
         if not err:
             try:
-                png, w, h = self.mod.render_png(sym, text, self.module_px.value(),
-                                                self.bar_height.value(),
-                                                self.show_text.isChecked())
+                png, w, h = self.mod.render_png(sym, text, module_px=self.module_px.value(),
+                                                bar_height_px=self.bar_height.value(),
+                                                show_text=self.show_text.isChecked())
                 pm = QPixmap()
                 pm.loadFromData(png)
                 self.preview.setPixmap(pm)
@@ -768,7 +770,7 @@ class BatchBarcodeDialog(QDialog):
                 for (r, c) in vals[:2000]:
                     try:
                         if mod.validate(self.sym.currentData(),
-                                        self.win.engine.display_text(sheet, r, c)):
+                                        self.win.cell_text(sheet, (r, c))):
                             bad += 1
                     except Exception:
                         bad += 1

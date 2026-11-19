@@ -1015,11 +1015,21 @@ class MainWindow(QMainWindow):
             self.view.refresh()
         return updated
 
+    def cell_text(self, sheet, rc) -> str:
+        """Displayed text of a cell, as encoded in a barcode."""
+        mod = barcodes_module()
+        if mod is not None and hasattr(mod, "source_text"):
+            try:
+                return mod.source_text(sheet, a1(*rc), self.engine)
+            except Exception:
+                pass
+        return self.engine.display_text(sheet, *rc)
+
     def barcode_text(self, sheet, bc: dict) -> str:
         src = bc.get("source")
         rc = parse_a1(src) if src else None
         if rc:
-            return self.engine.display_text(sheet, *rc)
+            return self.cell_text(sheet, rc)
         return bc.get("text") or ""
 
     def make_barcode(self, v: dict, sheet=None) -> dict:
@@ -1111,7 +1121,7 @@ class MainWindow(QMainWindow):
                 progress.setValue(i)
                 if progress.wasCanceled():
                     break
-            text = self.engine.display_text(sheet, r, c)
+            text = self.cell_text(sheet, (r, c))
             if mod.validate(v["symbology"], text):
                 skipped += 1
                 continue

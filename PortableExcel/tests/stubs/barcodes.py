@@ -51,7 +51,7 @@ def normalize(sym, text):
     return text
 
 
-def render_png(sym, text, module_px=2, bar_height_px=60, show_text=True):
+def render_png(sym, text, *, module_px=2, bar_height_px=60, show_text=True):
     from PySide6.QtCore import QBuffer, QByteArray, QIODevice, QRect, Qt
     from PySide6.QtGui import QColor, QFont, QImage, QPainter
     err = validate(sym, text)
@@ -124,7 +124,7 @@ def _source_text(sheet, source, engine):
 def make_barcode_image(sheet, source, text, symbology, engine=None, row=0, col=0,
                        show_text=True, module_px=2, bar_height_px=60, **opts):
     data_text = _source_text(sheet, source, engine) if source else (text or "")
-    png, w, h = render_png(symbology, data_text, module_px, bar_height_px, show_text)
+    png, w, h = render_png(symbology, data_text, module_px=module_px, bar_height_px=bar_height_px, show_text=show_text)
     return {"id": uuid.uuid4().hex, "name": "Barcode", "row": row, "col": col, "dx": 2,
             "dy": 2, "width": w, "height": h, "data": png, "fmt": "png",
             "barcode": {"symbology": symbology, "source": source, "text": text or "",
@@ -145,8 +145,9 @@ def refresh_barcodes(book, engine, sheet=None, changed_cells=None):
             text = _source_text(sh, bc["source"], engine)
             if validate(bc["symbology"], text):
                 continue
-            png, w, h = render_png(bc["symbology"], text, bc.get("module_px", 2),
-                                   bc.get("bar_height_px", 60), bc.get("show_text", True))
+            png, w, h = render_png(bc["symbology"], text, module_px=bc.get("module_px", 2),
+                                   bar_height_px=bc.get("bar_height_px", 60),
+                                   show_text=bc.get("show_text", True))
             if png != img.get("data"):
                 img["data"] = png
                 updated.append(img)
