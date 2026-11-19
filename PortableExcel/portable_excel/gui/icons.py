@@ -474,7 +474,53 @@ def _folder(p):
     p.drawRect(QRectF(3, 6, 10, 4))
 
 
+def _barcode(p, x=4, y=5, w=24, h=18, color=DARK):
+    p.setPen(Qt.NoPen)
+    p.setBrush(QColor(color))
+    pattern = [2, 1, 1, 2, 3, 1, 1, 1, 2, 1, 3, 1, 1, 2, 1]
+    xx = x
+    on = True
+    unit = w / sum(pattern)
+    for n in pattern:
+        if on:
+            p.drawRect(QRectF(xx, y, n * unit, h))
+        xx += n * unit
+        on = not on
+
+
+def _barcode_icon(p):
+    p.setPen(QPen(DARK, 1))
+    p.setBrush(QColor("#FFFFFF"))
+    p.drawRect(QRectF(2, 3, 28, 26))
+    _barcode(p, 5, 6, 22, 15)
+    _text(p, "123", DARK, 7, False, rect=QRectF(2, 21, 28, 8))
+
+
+def _barcodes_icon(p):
+    for i, y in enumerate((2, 12, 22)):
+        p.setPen(QPen(QColor("#888888"), 1))
+        p.setBrush(QColor("#FFFFFF"))
+        p.drawRect(QRectF(2, y, 9, 8))
+        _barcode(p, 14, y + 1, 16, 7)
+
+
+def _picture(p):
+    p.setPen(QPen(DARK, 1.2))
+    p.setBrush(QColor("#DDEBF7"))
+    p.drawRect(QRectF(3, 5, 26, 22))
+    p.setPen(Qt.NoPen)
+    p.setBrush(QColor("#70AD47"))
+    p.drawPolygon(QPolygonF([QPointF(4, 26), QPointF(12, 14), QPointF(19, 26)]))
+    p.setBrush(QColor("#548235"))
+    p.drawPolygon(QPolygonF([QPointF(13, 26), QPointF(20, 17), QPointF(28, 26)]))
+    p.setBrush(QColor("#FFC000"))
+    p.drawEllipse(QRectF(20, 8, 6, 6))
+
+
 _DRAW: Dict[str, Callable[[QPainter], None]] = {
+    "barcode": _barcode_icon,
+    "barcodes": _barcodes_icon,
+    "picture": _picture,
     "save": lambda p: _draw_save(p, "#444444"),
     "save_white": lambda p: _draw_save(p, "#ffffff"),
     "undo_white": lambda p: _undo(p),

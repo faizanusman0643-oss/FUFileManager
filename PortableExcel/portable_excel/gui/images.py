@@ -595,6 +595,10 @@ class BarcodeDialog(QDialog):
             self.module_px.setValue(int(bc.get("module_px", 2)))
             self.bar_height.setValue(int(bc.get("bar_height_px", 60)))
             self.target.setText(a1(int(edit.get("row", 0)), int(edit.get("col", 0))))
+        if not edit:
+            t = self.data_text() or ""
+            if t.startswith(("=", "&")):  # ISBT 128 data -> Code 128
+                default_sym = "code128"
         i = self.sym.findData(default_sym)
         self.sym.setCurrentIndex(max(0, i))
         for sig in (self.sym.currentIndexChanged, self.linked.toggled, self.source.textChanged,
@@ -695,6 +699,8 @@ class BatchBarcodeDialog(QDialog):
         self.sym = QComboBox()
         for key, label in symbologies():
             self.sym.addItem(label, key)
+        i = self.sym.findData("code128")
+        self.sym.setCurrentIndex(max(0, i))
         self.out_col = QLineEdit(col_to_name(self.default_output_col(rng)))
         self.out_col.setMaxLength(3)
         self.show_text = QCheckBox("Show human-readable text")

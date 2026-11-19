@@ -2856,8 +2856,7 @@ class MainWindow(QMainWindow):
 
     def _on_book_change(self, sheet, r, c):
         self.modified = True
-        self._pending_changed.add((id(sheet), sheet, r, c)) if False else \
-            self._pending_changed.add((sheet.name, r, c))
+        self._pending_changed.add((sheet.name, r, c))
         if not self._refresh_pending:
             self._refresh_pending = True
             QTimer.singleShot(0, self._deferred_refresh)
