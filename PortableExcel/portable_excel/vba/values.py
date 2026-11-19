@@ -152,7 +152,7 @@ class TypeSpec:
         if k == "scalar":
             return SCALAR_DEFAULTS[self.name]
         if k == "fixedstr":
-            return " " * 0 if False else "\0" * 0 + " " * 0 + ("\0" * self.size if False else " " * 0) + "".ljust(self.size)[:self.size] if False else "".ljust(self.size)
+            return " " * self.size
         if k == "udt":
             return self.udt.instantiate()
         return NOTHING
