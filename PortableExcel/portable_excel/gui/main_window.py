@@ -337,6 +337,11 @@ class MainWindow(QMainWindow):
         A("prev_sheet", "Previous Sheet", lambda: self.step_sheet(-1), "Ctrl+PgUp")
         A("about", "About PortableExcel", self.about, None, "info")
         A("file", "File", self.show_backstage, "Alt+F")
+        A("print", "Print...", lambda: self.print_dialog(), "Ctrl+P", "print")
+        A("print_preview", "Print Preview", lambda: self.print_dialog(preview=True), None,
+          "print")
+        A("export_pdf", "Export PDF...", lambda: self.export_pdf_dialog(), None, "pdf")
+        A("page_setup", "Page Setup...", lambda: self.printer_setup(), None, "print")
         A("insert_picture", "Picture", lambda: self.images.insert_picture_file(), None,
           "picture", tip="Insert a picture from a file (PNG, JPG, BMP, GIF)")
         A("insert_barcode", "Barcode", lambda: self.barcode_dialog(), None, "barcode",
@@ -540,6 +545,10 @@ class MainWindow(QMainWindow):
                             triggered=self.calculate_now), "calc")
         # View -------------------------------------------------------------------------
         vw = rb.add_page("View")
+        g = vw.add_group("Print")
+        g.add_large(acts["print_preview"], "print")
+        g.add_large(acts["export_pdf"], "pdf")
+        g.add_small_column([(acts["print"], "print"), (acts["page_setup"], "print")])
         g = vw.add_group("Show")
         g.add_small_column([(acts["gridlines"], "gridlines"), (acts["headings"], "names"),
                             (acts["formula_bar"], "function")])
@@ -2588,6 +2597,84 @@ class MainWindow(QMainWindow):
         if warnings:
             self.show_save_warnings(warnings)
         return True
+
+    # ======================================================================
+    # Printing / PDF
+    # ======================================================================
+    def _print_area(self, selection_only: bool):
+        sheet = self.book.active
+        if selection_only:
+            r1, c1, r2, c2 = self.view.active_range()
+        else:
+            r1, c1 = 0, 0
+            r2, c2 = 1_048_575, 16_383
+        return sheet, r1, c1, r2, c2
+
+    def range_renderer(self, sheet, r1, c1, r2, c2):
+        from .printing import RangeRenderer
+        return RangeRenderer(sheet, self.engine, r1, c1, r2, c2,
+                             gridlines=self.actions["gridlines"].isChecked(),
+                             title=f"{self.book_title()} - {sheet.name}")
+
+    def printer(self):
+        if getattr(self, "_printer", None) is None:
+            from .printing import make_printer
+            self._printer = make_printer()
+        return self._printer
+
+    def printer_setup(self):
+        from PySide6.QtPrintSupport import QPageSetupDialog
+        d = QPageSetupDialog(self.printer(), self)
+        return bool(d.exec())
+
+    def print_range(self, sheet, r1, c1, r2, c2, preview=False, copies=1):
+        from PySide6.QtPrintSupport import QPrintDialog, QPrintPreviewDialog
+        from .printing import render_to_device
+        rr = self.range_renderer(sheet, r1, c1, r2, c2)
+        pr = self.printer()
+        pr.setCopyCount(max(1, copies))
+        pr.setDocName(f"{self.book_title()} - {sheet.name}")
+        if preview:
+            dlg = QPrintPreviewDialog(pr, self)
+            dlg.setWindowTitle("Print Preview - PortableExcel")
+            dlg.paintRequested.connect(lambda printer: render_to_device(rr, printer))
+            self._print_preview = dlg
+            return bool(dlg.exec())
+        dlg = QPrintDialog(pr, self)
+        if not dlg.exec():
+            return False
+        render_to_device(rr, pr)
+        return True
+
+    def print_dialog(self, preview=False):
+        selection = len(self.view.sel_ranges) == 1 and \
+            self.view.active_range()[0:2] != self.view.active_range()[2:4]
+        return self.print_range(*self._print_area(selection), preview=preview)
+
+    def export_pdf(self, sheet, r1, c1, r2, c2, path=None, ask=True):
+        from .printing import export_pdf
+        if not path:
+            base = os.path.splitext(self.book.path or self.book_title())[0] + ".pdf"
+            path, _ = QFileDialog.getSaveFileName(self, "Export PDF", base, "PDF (*.pdf)")
+            if not path:
+                return None
+        if not path.lower().endswith(".pdf"):
+            path += ".pdf"
+        try:
+            n = export_pdf(self.range_renderer(sheet, r1, c1, r2, c2), path)
+        except Exception as e:
+            log.exception("PDF export failed")
+            QMessageBox.warning(self, "PortableExcel", f"PDF export failed:\n{e}")
+            return None
+        self.set_status_message(f"Exported {n} page(s) to {os.path.basename(path)}")
+        return path
+
+    def export_pdf_dialog(self):
+        items = ["Active sheet", "Selection"]
+        item, ok = QInputDialog.getItem(self, "Export PDF", "Publish what:", items, 0, False)
+        if not ok:
+            return None
+        return self.export_pdf(*self._print_area(item == "Selection"))
 
     def show_save_warnings(self, warnings, modal=True):
         d = dialogs.WarningsDialog("PortableExcel - Compatibility",

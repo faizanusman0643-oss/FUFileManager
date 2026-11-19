@@ -156,6 +156,8 @@ class Module:
                 self.prop_let[p.lname] = p
             else:
                 self.prop_set[p.lname] = p
+        self.we_vars = [(i, d.name) for i, d in enumerate(self.var_decls)
+                        if getattr(d, "withevents", False)]
         if self.type == "class":
             self.terminate_proc = self.procs.get("class_terminate")
             self.initialize_proc = self.procs.get("class_initialize")
@@ -353,6 +355,8 @@ class VBARuntime(SheetOpsMixin, FileIOMixin):
         self.event_depth = 0
         self.running = 0
         self.udf_depth = 0
+        import weakref
+        self.we_holders = weakref.WeakSet()
         self.udf_steps = 0
         self._udf_cache = {}
         self.live_forms = []
@@ -1151,30 +1155,107 @@ class VBARuntime(SheetOpsMixin, FileIOMixin):
             return a
         return a
 
+    # ------------------------------------------------------------------
+    # WithEvents
+    # ------------------------------------------------------------------
+    def we_targets(self, match, event):
+        """(proc, me) pairs for WithEvents variables whose value satisfies
+        match(value): handler <VarName>_<Event> in the holder's module."""
+        out = []
+        ev = event.lower()
+        for holder in list(self.we_holders):
+            m = holder.module
+            for idx, vname in m.we_vars:
+                try:
+                    v = holder.vars[idx]
+                except IndexError:
+                    continue
+                if isinstance(v, VBAObject) and match(v):
+                    p = m.procs.get(f"{vname}_{ev}")
+                    if p is not None:
+                        out.append((p, holder))
+        for m in self.module_list:
+            if m.type in ("document", "standard") and getattr(m, "we_vars", None):
+                for idx, vname in m.we_vars:
+                    v = m.vars[idx] if idx < len(m.vars) else None
+                    if isinstance(v, VBAObject) and match(v):
+                        p = m.procs.get(f"{vname}_{ev}")
+                        if p is not None:
+                            me = self.doc_object_for_module(m) if m.type == "document" else None
+                            out.append((p, me))
+        return out
+
+    def has_we(self):
+        return bool(len(self.we_holders)) or any(getattr(m, "we_vars", None) and m.type == "document"
+                                                 for m in self.module_list)
+
+    @staticmethod
+    def fit_args(p, args):
+        vargs = list(args)
+        n = len(p.params)
+        if p.params and p.params[-1].paramarray:
+            return vargs
+        while len(vargs) < n:
+            pi = p.params[len(vargs)]
+            vargs.append(False if pi.ts.name == "boolean" or pi.name == "cancel" else
+                         0 if pi.ts.kind == "scalar" and pi.ts.name != "string" else EMPTY)
+        return vargs[:n]
+
+    def run_targets(self, targets, args, nested=False):
+        """Run event handlers in order, threading ByRef args through.
+        Returns the final argument values."""
+        args = list(args)
+        seen = set()
+        for p, me in targets:
+            key = (id(p), id(me))
+            if key in seen:
+                continue
+            seen.add(key)
+            vargs = self.fit_args(p, args)
+            if nested:
+                res, f = self.invoke(p, vargs, {}, me)
+            else:
+                out = self._top(lambda p=p, vargs=vargs, me=me: self.invoke(p, vargs, {}, me))
+                if out is None:
+                    return args
+                res, f = out
+            new = [f.v[q.slot] for q in p.params]
+            args = new + args[len(new):]
+        return args
+
+    _APP_EVENT = {"open": "WorkbookOpen", "beforeclose": "WorkbookBeforeClose",
+                  "beforesave": "WorkbookBeforeSave", "activate": "WorkbookActivate",
+                  "deactivate": "WorkbookDeactivate", "newsheet": "WorkbookNewSheet"}
+
     def fire_event(self, module_name, proc, args=()):
         if not self.app.enableevents:
             return None
         m = self.modules.get((module_name or "").lower())
-        if m is None:
-            return None
-        p = m.procs.get(proc.lower())
-        if p is None:
+        targets = []
+        p = m.procs.get(proc.lower()) if m is not None else None
+        if p is not None:
+            me = self.doc_object_for_module(m) if m.type == "document" else None
+            targets.append((p, me))
+        low = proc.lower()
+        if self.has_we() and "_" in low:
+            from .excel import WorkbookObj, WorksheetObj, ApplicationObj
+            ev = low.split("_", 1)[1]
+            if low.startswith("workbook_"):
+                targets += self.we_targets(lambda v: isinstance(v, WorkbookObj), ev)
+                app_ev = self._APP_EVENT.get(ev, ev if ev.startswith("sheet") else "Workbook" + ev)
+                targets += self.we_targets(lambda v: isinstance(v, ApplicationObj), app_ev)
+            elif low.startswith("worksheet_") and m is not None:
+                sh = next((s for s in self.book.sheets if s.code_name.lower() == m.lname), None)
+                if sh is not None:
+                    targets += self.we_targets(lambda v: isinstance(v, WorksheetObj) and v.sheet is sh, ev)
+        if not targets:
             return None
         vargs = [self._wrap_event_arg(a) for a in args]
-        n = len(p.params)
-        while len(vargs) < n and (p.params[len(vargs)].ts.name == "boolean" or
-                                  p.params[len(vargs)].name == "cancel"):
-            vargs.append(False)
-        vargs = vargs[:n] if not (p.params and p.params[-1].paramarray) else vargs
-        me = self.doc_object_for_module(m) if m.type == "document" else None
         if self.event_depth > 50:
             return None
         self.event_depth += 1
         try:
-            def go():
-                res, f = self.invoke(p, vargs, {}, me)
-                return [f.v[q.slot] for q in p.params]
-            return self._top(go)
+            return self.run_targets(targets, vargs)
         finally:
             self.event_depth -= 1
 
@@ -1186,8 +1267,8 @@ class VBARuntime(SheetOpsMixin, FileIOMixin):
         if not self.app.enableevents:
             return
         cn = sheet.code_name
-        h1 = self.has_handler(cn, "worksheet_change")
-        h2 = self.has_handler("thisworkbook", "workbook_sheetchange")
+        h1 = self.has_handler(cn, "worksheet_change") or self.has_we()
+        h2 = self.has_handler("thisworkbook", "workbook_sheetchange") or self.has_we()
         if not (h1 or h2):
             return
         from .excel import RangeObj

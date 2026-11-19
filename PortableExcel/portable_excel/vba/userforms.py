@@ -912,6 +912,8 @@ class FormInstance(VBAObject):
                 c.setdefault("selected", [False] * len(c.get("list") or []))
         self.d = self.form
         self.vars = module.new_instance_vars()
+        if getattr(module, "we_vars", None):
+            rt.we_holders.add(self)
         self.view = None
         self.loaded = True
         self.visible = False
@@ -1052,36 +1054,29 @@ class FormInstance(VBAObject):
             c = self.find_ctrl(ctrl)
             if c is not None and c.get("control_source"):
                 self.write_control_source(self.control(c["name"]))
+        targets = []
         p = self.find_handler(ctrl, event)
+        if p is not None:
+            targets.append((p, self))
+        if ctrl is not None:
+            c = self.find_ctrl(ctrl)
+            if c is not None:
+                targets += self.rt.we_targets(
+                    lambda v: isinstance(v, ControlObj) and v.d is c, event)
         args = list(args)
-        if p is None:
+        if not targets:
             return args
         key = (ctrl or "", event.lower())
         depth = self._firing.get(key, 0)
         if depth >= 10:
             return args
-        n = len(p.params)
-        vargs = [(_vba(a) if not isinstance(a, VBAObject) else a) for a in args[:n]]
-        while len(vargs) < n:
-            pi = p.params[len(vargs)]
-            vargs.append(False if pi.ts.name == "boolean" or pi.name == "cancel" else
-                         0 if pi.ts.kind == "scalar" else EMPTY)
+        vargs = [(_vba(a) if not isinstance(a, VBAObject) else a) for a in args]
         self._firing[key] = depth + 1
         try:
-            if nested:
-                res, f = self.rt.invoke(p, vargs, {}, self)
-            else:
-                def go():
-                    return self.rt.invoke(p, vargs, {}, self)
-                out = self.rt._top(go)
-                if out is None:       # End executed
-                    return args
-                res, f = out
+            out = self.rt.run_targets(targets, vargs, nested=nested)
         finally:
             self._firing[key] = depth
-        out = [_py(f.v[q.slot]) if not isinstance(f.v[q.slot], VBAObject) else f.v[q.slot]
-               for q in p.params]
-        return out + args[n:]
+        return [_py(v) if not isinstance(v, VBAObject) else v for v in out]
 
     # -- bridge API (GUI -> runtime) ---------------------------------------------
     def fire(self, ctrl_name, event, args=()):

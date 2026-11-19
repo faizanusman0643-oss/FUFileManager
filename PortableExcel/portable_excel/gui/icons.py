@@ -517,7 +517,29 @@ def _picture(p):
     p.drawEllipse(QRectF(20, 8, 6, 6))
 
 
+def _printer(p):
+    p.setPen(QPen(DARK, 1.4))
+    p.setBrush(QColor("#FFFFFF"))
+    p.drawRect(QRectF(9, 3, 14, 9))
+    p.setBrush(QColor("#BFBFBF"))
+    p.drawRoundedRect(QRectF(3, 11, 26, 11), 2, 2)
+    p.setBrush(QColor("#FFFFFF"))
+    p.drawRect(QRectF(9, 18, 14, 10))
+    p.drawLine(QPointF(11, 22), QPointF(21, 22))
+    p.drawLine(QPointF(11, 25), QPointF(19, 25))
+
+
+def _pdf(p):
+    _sheet(p, 6, 3, 20, 26, 6)
+    p.setPen(Qt.NoPen)
+    p.setBrush(QColor("#C00000"))
+    p.drawRect(QRectF(3, 15, 22, 10))
+    _text(p, "PDF", "#FFFFFF", 8, True, rect=QRectF(3, 15, 22, 10))
+
+
 _DRAW: Dict[str, Callable[[QPainter], None]] = {
+    "print": _printer,
+    "pdf": _pdf,
     "barcode": _barcode_icon,
     "barcodes": _barcodes_icon,
     "picture": _picture,

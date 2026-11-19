@@ -137,3 +137,38 @@ class GuiVBAHost(_HostBase):
         view = QtFormView(instance, self)
         self.win.form_views.append(view)
         return view
+
+    # clipboard (MSForms.DataObject) ------------------------------------------------
+    def set_clipboard_text(self, text):
+        from PySide6.QtGui import QGuiApplication
+        QGuiApplication.clipboard().setText("" if text is None else str(text))
+
+    def get_clipboard_text(self):
+        from PySide6.QtGui import QGuiApplication
+        return QGuiApplication.clipboard().text()
+
+    # printing / PDF ---------------------------------------------------------------
+    def print_range(self, sheet, r1, c1, r2, c2, preview=False, copies=1):
+        return self.win.print_range(self._sheet(sheet), r1, c1, r2, c2, preview=bool(preview),
+                                    copies=int(copies or 1))
+
+    def export_pdf(self, sheet, r1, c1, r2, c2, path):
+        return self.win.export_pdf(self._sheet(sheet), r1, c1, r2, c2, path, ask=False)
+
+    def printer_setup(self):
+        return self.win.printer_setup()
+
+    # file dialogs (Application.GetSaveAsFilename / GetOpenFilename) ------------------
+    def get_save_filename(self, initial="", filter=None, title=None):
+        from PySide6.QtWidgets import QFileDialog
+        from .printing import excel_filter_to_qt
+        path, _ = QFileDialog.getSaveFileName(self.win, title or "Save As", initial or "",
+                                              excel_filter_to_qt(filter))
+        return path or None
+
+    def get_open_filename(self, filter=None, title=None):
+        from PySide6.QtWidgets import QFileDialog
+        from .printing import excel_filter_to_qt
+        path, _ = QFileDialog.getOpenFileName(self.win, title or "Open", "",
+                                              excel_filter_to_qt(filter))
+        return path or None

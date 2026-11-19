@@ -825,6 +825,8 @@ class QtFormView(QDialog):
         self._loop: Optional[QEventLoop] = None
         self._allow_close = False
         self._closed = False
+        self._resizable = False
+        self._applying_size = 0
         self.setWindowFlags(Qt.Dialog | Qt.WindowTitleHint | Qt.WindowCloseButtonHint |
                             Qt.CustomizeWindowHint)
         self.setAttribute(Qt.WA_DeleteOnClose, False)
@@ -836,6 +838,7 @@ class QtFormView(QDialog):
         self.renderer = FormRenderer(self.client, self.form, live=True, fire=self._fire,
                                      user_set=self._user_set)
         self._apply_form_props()
+        self._install_wheel_filters()
 
     # -- bridge ---------------------------------------------------------------
     @property
@@ -867,7 +870,18 @@ class QtFormView(QDialog):
         self.setWindowTitle(str(f.get("caption") or self.name))
         w = max(40, px(float(f.get("width") or 240) - FORM_BORDER_W))
         h = max(30, px(float(f.get("height") or 180) - FORM_BORDER_H))
-        self.setFixedSize(w, h)
+        self._applying_size += 1
+        try:
+            if self._resizable:
+                self.setMinimumSize(60, 40)
+                self.setMaximumSize(16777215, 16777215)
+                if (self.width(), self.height()) != (w, h) and \
+                        not (self.windowState() & (Qt.WindowMaximized | Qt.WindowFullScreen)):
+                    self.resize(w, h)
+            else:
+                self.setFixedSize(w, h)
+        finally:
+            self._applying_size -= 1
         self.renderer.apply_form()
 
     # -- FormView API ---------------------------------------------------------
@@ -954,6 +968,128 @@ class QtFormView(QDialog):
         if prop == "tab_index":
             self.renderer.apply_tab_order()
 
+    # -- window style (Windows API emulation) -----------------------------------
+    def set_window_flags(self, resizable=False, minimize=False, maximize=False, caption=True):
+        visible = self.isVisible()
+        flags = Qt.Dialog | Qt.CustomizeWindowHint
+        if caption:
+            flags |= Qt.WindowTitleHint | Qt.WindowCloseButtonHint | Qt.WindowSystemMenuHint
+            if minimize:
+                flags |= Qt.WindowMinimizeButtonHint
+            if maximize:
+                flags |= Qt.WindowMaximizeButtonHint
+        else:
+            flags |= Qt.FramelessWindowHint
+        self._resizable = bool(resizable or maximize)
+        geo = self.geometry()
+        self.setWindowFlags(flags)
+        self._apply_form_props()
+        if visible:
+            self.setGeometry(geo)
+            QDialog.show(self)
+
+    def set_window_state(self, state: str):
+        st = str(state or "normal").lower()
+        if st.startswith("max"):
+            self._resizable = True
+            self._apply_form_props()
+            self.setWindowState((self.windowState() & ~Qt.WindowMinimized) | Qt.WindowMaximized)
+            if not self.isVisible():
+                return
+            self.showMaximized()
+        elif st.startswith("min"):
+            self.setWindowState(self.windowState() | Qt.WindowMinimized)
+            if self.isVisible():
+                self.showMinimized()
+        else:
+            self.setWindowState(Qt.WindowNoState)
+            if self.isVisible():
+                self.showNormal()
+        QApplication.processEvents()
+        self._sync_size_to_form()
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        if not self._applying_size:
+            self._sync_size_to_form()
+
+    def _sync_size_to_form(self):
+        """User (or maximise) changed the window size -> form Width/Height + Resize."""
+        w_pt = forms.px_to_points(self.width()) + FORM_BORDER_W
+        h_pt = forms.px_to_points(self.height()) + FORM_BORDER_H
+        if abs(w_pt - float(self.form.get("width") or 0)) < 0.5 and \
+                abs(h_pt - float(self.form.get("height") or 0)) < 0.5:
+            return
+        try:
+            self.instance.user_set(None, "width", w_pt)
+            self.instance.user_set(None, "height", h_pt)
+        except Exception as ex:
+            self._report(ex)
+        self.form["width"], self.form["height"] = w_pt, h_pt
+        self._fire(None, "Resize")
+
+    # -- mouse wheel -> ScrollBar ------------------------------------------------
+    def _install_wheel_filters(self):
+        for w in [self, self.client] + self.client.findChildren(QWidget):
+            if not w.property("pe_wheel"):
+                w.setProperty("pe_wheel", True)
+                w.installEventFilter(self)
+
+    def eventFilter(self, obj, ev):
+        if ev.type() == QEvent.Wheel and isinstance(obj, QWidget):
+            if self.wheel_scroll(obj, ev.angleDelta().y()):
+                return True
+        return super().eventFilter(obj, ev)
+
+    def wheel_scroll(self, widget: QWidget, delta_y: int) -> bool:
+        """Scroll the vertical ScrollBar under the cursor (or the form's first
+        vertical ScrollBar). Widgets that scroll themselves keep the wheel."""
+        r = self.renderer
+        # find the control that owns `widget`
+        owner = None
+        w = widget
+        while w is not None and w is not self:
+            for name, cw in r.widgets.items():
+                if cw is w:
+                    owner = r.ctrl(name)
+                    break
+            if owner is not None:
+                break
+            w = w.parentWidget()
+        if owner is not None and owner.get("type") in ("ListBox", "ComboBox", "TextBox") and \
+                (owner.get("type") != "TextBox" or _bool(owner.get("multi_line"))):
+            return False
+        target = owner if owner is not None and owner.get("type") == "ScrollBar" and \
+            not r._horizontal(owner) else None
+        if target is None:
+            for c in self.form.get("controls") or []:
+                if c.get("type") == "ScrollBar" and not r._horizontal(c) and \
+                        _bool(c.get("visible", True)) and _bool(c.get("enabled", True)):
+                    target = c
+                    break
+        if target is None or not delta_y:
+            return False
+        notches = delta_y / 120.0
+        step = int(target.get("small_change") or 1) * 3
+        lo, hi = int(target.get("min") or 0), int(target.get("max") or 0)
+        v = int(target.get("value") or 0)
+        nv = int(round(v - notches * step)) if lo <= hi else int(round(v + notches * step))
+        nv = max(min(lo, hi), min(max(lo, hi), nv))
+        if nv == v:
+            return True
+        sb = r.widgets.get(target["name"])
+        if sb is not None:
+            r._updating += 1
+            try:
+                sb.setValue(nv)
+            finally:
+                r._updating -= 1
+        target["value"] = nv
+        self._user_set(target["name"], "value", nv)
+        self._fire(target["name"], "Change")
+        self._fire(target["name"], "Scroll")
+        return True
+
     def add_control(self, ctrl: dict):
         full = forms.normalize_form({"controls": [ctrl]})["controls"][0]
         ctrls = self.form.setdefault("controls", [])
@@ -963,12 +1099,14 @@ class QtFormView(QDialog):
             full = next(c for c in ctrls if c.get("name", "").lower() == full["name"].lower())
         self.renderer._create(full)
         self.renderer.apply_tab_order()
+        self._install_wheel_filters()
 
     def remove_control(self, ctrl_name: str):
         ctrls = self.form.get("controls") or []
         self.form["controls"] = [c for c in ctrls
                                  if c.get("name", "").lower() != ctrl_name.lower()]
         self.renderer.build()
+        self._install_wheel_filters()
 
     def set_focus(self, ctrl_name: str):
         w = self.renderer.widgets.get(ctrl_name)

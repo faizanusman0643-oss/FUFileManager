@@ -324,6 +324,8 @@ class ClassInstance(VBAObject):
         self.vars = module.new_instance_vars()
         self.terminated = False
         self.vba_typename = module.text
+        if getattr(module, "we_vars", None):
+            rt.we_holders.add(self)
 
     def vba_get(self, name, args, named):
         return self.rt.class_get(self, name, args, named)

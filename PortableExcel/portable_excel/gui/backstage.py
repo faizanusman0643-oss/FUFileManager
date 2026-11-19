@@ -54,6 +54,8 @@ class Backstage(QWidget):
         item("Save", None, lambda: self._run(self.win.save))
         item("Save As", None, lambda: self._run(self.win.save_as))
         item("Save with password...", None, lambda: self._run(self.win.save_with_password))
+        item("Print...", None, lambda: self._run(lambda: self.win.print_dialog(preview=True)))
+        item("Export PDF...", None, lambda: self._run(self.win.export_pdf_dialog))
         nv.addSpacing(16)
         item("Change app password...", None, lambda: self._run(self.win.change_app_password))
         item("Macro security...", None, lambda: self._run(self.win.macro_security))
