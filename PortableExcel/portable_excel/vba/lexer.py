@@ -221,8 +221,8 @@ def tokenize_lines(lines, first_line=1):
         i = 0
         n = len(line)
         stmt_start = not cont
+        space = not cont
         cont = False
-        space = True
         while i < n:
             ch = line[i]
             if ch in " \t\x0c\xa0":
