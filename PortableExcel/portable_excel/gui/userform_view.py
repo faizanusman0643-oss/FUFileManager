@@ -963,6 +963,7 @@ class QtFormView(QDialog):
             pass
         if prop in ("multi_line", "style", "column_count", "pages", "tabs", "parent", "type"):
             self.renderer.build()  # structural change
+            self._install_wheel_filters()
             return
         self.renderer.apply(c)
         if prop == "tab_index":
