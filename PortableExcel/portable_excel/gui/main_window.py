@@ -10,7 +10,7 @@ from typing import Dict, List, Optional, Tuple
 
 from PySide6.QtCore import QEvent, QObject, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QColor, QFont, QGuiApplication, QKeySequence, QUndoStack
-from PySide6.QtWidgets import (QApplication, QComboBox, QFileDialog, QFontComboBox, QFrame,
+from PySide6.QtWidgets import (QApplication, QComboBox, QProgressDialog, QFileDialog, QFontComboBox, QFrame,
                                QHBoxLayout, QInputDialog, QLabel, QLineEdit, QMainWindow,
                                QMenu, QMessageBox, QPushButton, QScrollBar, QSizePolicy,
                                QSlider, QStackedWidget, QTabBar, QToolButton, QVBoxLayout,
@@ -25,6 +25,7 @@ from .backstage import Backstage
 from .commands import UNDO_LIMIT, CellsCommand, SnapshotCommand
 from .grid import FormulaLineEdit, SpreadsheetView
 from .ribbon import Ribbon, TitleStrip
+from .images import (BarcodeDialog, BatchBarcodeDialog, ImageController, barcodes_module)
 from .vba_host import GuiVBAHost
 
 
@@ -201,6 +202,9 @@ class MainWindow(QMainWindow):
         self._frozen: Dict[int, Tuple[int, int]] = {}
         self._sheet_sel: Dict[int, Tuple] = {}
         self._suspend_events = False
+        self.images = ImageController(self)
+        self.last_copy_kind = "cells"
+        self._pending_changed = set()
         self.undo_stack = QUndoStack(self)
         self.undo_stack.setUndoLimit(UNDO_LIMIT)
         self.book.change_listeners.append(self._on_book_change)
@@ -333,6 +337,12 @@ class MainWindow(QMainWindow):
         A("prev_sheet", "Previous Sheet", lambda: self.step_sheet(-1), "Ctrl+PgUp")
         A("about", "About PortableExcel", self.about, None, "info")
         A("file", "File", self.show_backstage, "Alt+F")
+        A("insert_picture", "Picture", lambda: self.images.insert_picture_file(), None,
+          "picture", tip="Insert a picture from a file (PNG, JPG, BMP, GIF)")
+        A("insert_barcode", "Barcode", lambda: self.barcode_dialog(), None, "barcode",
+          tip="Insert a barcode or QR code linked to a cell")
+        A("batch_barcodes", "Generate Barcodes", lambda: self.batch_barcodes_dialog(), None,
+          "barcodes", tip="Create one barcode per cell of the selected range")
 
     def _build_ui(self):
         self._font_color = "#FF0000"
@@ -490,6 +500,10 @@ class MainWindow(QMainWindow):
         fn_act.triggered.connect(self.insert_function)
         g.add_large(fn_act, "function")
         g.add_large(acts["autosum"], "autosum")
+        g = ins.add_group("Illustrations")
+        g.add_large(acts["insert_picture"], "picture")
+        g.add_large(acts["insert_barcode"], "barcode")
+        g.add_large(acts["batch_barcodes"], "barcodes")
         g = ins.add_group("Cells")
         g.add_small_column([(acts["insert_rows"], "insert_row"), (acts["insert_cols"], "insert_col"),
                             (acts["insert_sheet"], "sheet")])
@@ -519,6 +533,8 @@ class MainWindow(QMainWindow):
         g.add_large(QAction(icons.icon("find"), "Find && Replace", self,
                             triggered=lambda: self.show_find(True)), "find")
         g.add_small_column([(acts["goto"], "find")])
+        g = da.add_group("Barcodes")
+        g.add_large(acts["batch_barcodes"], "barcodes")
         g = da.add_group("Calculation")
         g.add_large(QAction(icons.icon("calc"), "Refresh All", self,
                             triggered=self.calculate_now), "calc")
@@ -760,6 +776,10 @@ class MainWindow(QMainWindow):
         r, c = self.view.current_cell()
         if self.name_box.lineEdit().hasFocus():
             return
+        img = self.images.selected_image() if hasattr(self, "images") else None
+        if img is not None:
+            self.name_box.setEditText(str(img.get("name", "")))
+            return
         for name, ref in self.book.defined_names.items():
             sheet_part, _, rng = ref.rpartition("!")
             if sheet_part.strip("'").lower() == self.book.active.name.lower():
@@ -932,6 +952,7 @@ class MainWindow(QMainWindow):
             self.activate_sheet(sheet)
         if select:
             self.view.select_range(*select)
+        self.refresh_barcodes(sheet, keys)
         self.view.refresh()
         self.mark_dirty()
         self.on_current_changed()
@@ -955,11 +976,209 @@ class MainWindow(QMainWindow):
         self.view.set_sheet(self.book.active)
         self.view.set_frozen(*self._frozen.get(id(self.book.active), (0, 0)))
         self.view.goto(*cur)
+        if self.images.selected and not self.images.image(self.images.selected):
+            self.images.selected = None
+        self.refresh_barcodes(None, None)
         self.view.refresh()
         self.mark_dirty()
         self.on_current_changed()
         if self.vba_editor is not None:
             self.vba_editor.rebuild_tree()
+
+    # ======================================================================
+    # Pictures and barcodes
+    # ======================================================================
+    def refresh_barcodes(self, sheet=None, keys=None):
+        """Re-render linked barcodes after cell changes (keys None = all)."""
+        sheets = [sheet] if sheet is not None else self.book.sheets
+        if not any(im.get("barcode") for sh in sheets for im in sh.images):
+            return []
+        mod = barcodes_module()
+        if mod is None:
+            return []
+        if keys is not None and sheet is not None:
+            # formulas may depend on the edited cells: refresh those sources too
+            for im in sheet.images:
+                src = (im.get("barcode") or {}).get("source")
+                rc = parse_a1(src) if src else None
+                if rc and sheet.get_raw(*rc).startswith("="):
+                    keys = None
+                    break
+        try:
+            updated = mod.refresh_barcodes(self.book, self.engine, sheet=sheet,
+                                           changed_cells=list(keys) if keys is not None
+                                           else None) or []
+        except Exception:
+            log.exception("refresh_barcodes failed")
+            return []
+        if updated:
+            self.view.refresh()
+        return updated
+
+    def barcode_text(self, sheet, bc: dict) -> str:
+        src = bc.get("source")
+        rc = parse_a1(src) if src else None
+        if rc:
+            return self.engine.display_text(sheet, *rc)
+        return bc.get("text") or ""
+
+    def make_barcode(self, v: dict, sheet=None) -> dict:
+        mod = barcodes_module()
+        if mod is None:
+            raise RuntimeError("Barcode support is not available.")
+        sheet = sheet or self.book.active
+        return mod.make_barcode_image(sheet, v.get("source"), v.get("text", ""),
+                                      v["symbology"], engine=self.engine, row=v["row"],
+                                      col=v["col"], show_text=v.get("show_text", True),
+                                      module_px=v.get("module_px", 2),
+                                      bar_height_px=v.get("bar_height_px", 60))
+
+    def insert_barcode(self, v: dict) -> Optional[dict]:
+        try:
+            img = self.make_barcode(v)
+        except Exception as e:
+            QMessageBox.warning(self, "PortableExcel", f"Could not create the barcode:\n{e}")
+            return None
+        img["name"] = ""
+        return self.images.add_image(img, "Insert Barcode")
+
+    def edit_barcode(self, image_id: str, v: dict) -> bool:
+        try:
+            new = self.make_barcode(v)
+        except Exception as e:
+            QMessageBox.warning(self, "PortableExcel", f"Could not update the barcode:\n{e}")
+            return False
+
+        def fn(sheet):
+            for im in sheet.images:
+                if im.get("id") == image_id:
+                    moved = (im.get("row"), im.get("col")) != (v["row"], v["col"])
+                    im.update({k: new[k] for k in ("data", "width", "height", "barcode", "fmt")
+                               if k in new})
+                    im["row"], im["col"] = v["row"], v["col"]
+                    if moved:
+                        im["dx"], im["dy"] = new.get("dx", 0), new.get("dy", 0)
+        return self.images.change("Edit Barcode", fn, select=image_id)
+
+    def barcode_dialog(self, edit: Optional[dict] = None, modal: bool = True):
+        if barcodes_module() is None:
+            QMessageBox.warning(self, "PortableExcel", "Barcode support is not available.")
+            return None
+        d = BarcodeDialog(self, edit)
+        self._barcode_dialog = d
+        if not modal:
+            return d
+        if d.exec():
+            v = d.values()
+            if edit:
+                self.edit_barcode(edit["id"], v)
+            else:
+                self.insert_barcode(v)
+        return d
+
+    def batch_barcodes_dialog(self, modal: bool = True):
+        if barcodes_module() is None:
+            QMessageBox.warning(self, "PortableExcel", "Barcode support is not available.")
+            return None
+        d = BatchBarcodeDialog(self, self._clamp(*self.view.active_range()))
+        self._batch_dialog = d
+        if not modal:
+            return d
+        if d.exec():
+            self.generate_barcodes(d.values())
+        return d
+
+    def generate_barcodes(self, v: dict) -> int:
+        """One barcode per non-empty cell of v['range'] (single undo step)."""
+        mod = barcodes_module()
+        if mod is None or not v.get("range"):
+            return 0
+        sheet = self.book.active
+        r1, c1, r2, c2 = self._clamp(*v["range"])
+        cells = [(r, c) for r, c, _raw in sheet.iter_cells_in(r1, c1, r2, c2)]
+        out_col = int(v["out_col"])
+        made: List[dict] = []
+        skipped = 0
+        progress = None
+        if len(cells) > 40:
+            progress = QProgressDialog("Generating barcodes...", "Cancel", 0, len(cells), self)
+            progress.setWindowTitle("PortableExcel")
+            progress.setWindowModality(Qt.WindowModal)
+            progress.setMinimumDuration(300)
+        existing = {(im.get("row"), im.get("col")) for im in sheet.images if im.get("barcode")}
+        for i, (r, c) in enumerate(cells):
+            if progress is not None:
+                progress.setValue(i)
+                if progress.wasCanceled():
+                    break
+            text = self.engine.display_text(sheet, r, c)
+            if mod.validate(v["symbology"], text):
+                skipped += 1
+                continue
+            col = out_col + (c - c1)
+            linked = v.get("linked", True)
+            try:
+                img = mod.make_barcode_image(
+                    sheet, a1(r, c) if linked else None, "" if linked else text,
+                    v["symbology"], engine=self.engine, row=r, col=col,
+                    show_text=v.get("show_text", True), module_px=v.get("module_px", 1),
+                    bar_height_px=v.get("bar_height_px", 40))
+            except Exception:
+                log.exception("barcode failed for %s", a1(r, c))
+                skipped += 1
+                continue
+            img["dx"], img["dy"] = 2, 2
+            made.append(img)
+        if progress is not None:
+            progress.setValue(len(cells))
+            progress.close()
+        if not made:
+            if skipped:
+                QMessageBox.information(self, "PortableExcel",
+                                        f"No barcodes created: {skipped} invalid value(s).")
+            return 0
+
+        from .images import new_image_id, unique_image_name
+
+        def fn():
+            for img in made:
+                img["id"] = new_image_id(self.book)
+                img["name"] = unique_image_name(self.book, "Barcode")
+                sheet.images.append(img)
+            if v.get("fit"):
+                cols = {}
+                rows = {}
+                for img in made:
+                    cols[img["col"]] = max(cols.get(img["col"], 0), int(img["width"]) + 6)
+                    rows[img["row"]] = max(rows.get(img["row"], 0), int(img["height"]) + 4)
+                for col, w in cols.items():
+                    sheet.col_widths[col] = max(sheet.col_widths.get(col, 64), w)
+                for row, h in rows.items():
+                    sheet.row_heights[row] = max(sheet.row_heights.get(row, 20), h)
+        self._structural("Generate Barcodes", fn)
+        self.view.apply_sizes()
+        msg = f"{len(made)} barcode(s) created"
+        if skipped:
+            msg += f", {skipped} invalid value(s) skipped"
+        self.set_status_message(msg)
+        return len(made)
+
+    def on_image_selection(self):
+        img = self.images.selected_image()
+        if img is not None:
+            self.name_box.setEditText(str(img.get("name", "")))
+            bc = img.get("barcode")
+            if bc:
+                src = bc.get("source")
+                self.set_status_message(
+                    f"{img.get('name')}: {bc.get('symbology', '').upper()}"
+                    + (f" linked to {src}" if src else f" \"{bc.get('text', '')}\""))
+            else:
+                self.set_status_message(f"{img.get('name')}: {img.get('width')} x "
+                                        f"{img.get('height')} px")
+        else:
+            self.set_status_message("")
+            self._update_name_box()
 
     def user_set_cell(self, r, c, text, fill_selection=False):
         sheet = self.book.active
@@ -1213,6 +1432,12 @@ class MainWindow(QMainWindow):
         if self.view.is_editing():
             self.view.delegate.editor.cut() if cut else self.view.delegate.editor.copy()
             return
+        if self.images.selected:
+            self.images.copy_selected()
+            if cut:
+                self.images.delete_selected()
+            return
+        self.last_copy_kind = "cells"
         if len(self.view.sel_ranges) > 1:
             QMessageBox.information(self, "PortableExcel",
                                     "This action won't work on multiple selections.")
@@ -1243,6 +1468,8 @@ class MainWindow(QMainWindow):
     def paste(self, values_only=False):
         if self.view.is_editing():
             self.view.delegate.editor.paste()
+            return
+        if not values_only and self.images.paste():
             return
         sheet = self.book.active
         r1, c1, r2, c2 = self.view.active_range()
@@ -1985,6 +2212,7 @@ class MainWindow(QMainWindow):
                                     self.view.horizontalScrollBar().value())
         self._fire_event(old.code_name, "Worksheet_Deactivate")
         self.book.active_index = self.book.sheets.index(sheet)
+        self.images.selected = None
         sheet.visible = True
         self.view.set_sheet(sheet)
         self.view.set_frozen(*self._frozen.get(id(sheet), (0, 0)))
@@ -2619,6 +2847,7 @@ class MainWindow(QMainWindow):
                 self.view.set_sheet(self.book.active)
         self.view.sheet_model.ensure_cell(*[max(0, x - 1) for x in
                                             self.book.active.used_bounds()])
+        self.refresh_barcodes(None, None)
         self.view.apply_sizes()
         self.view.refresh()
         self.on_current_changed()
@@ -2627,6 +2856,8 @@ class MainWindow(QMainWindow):
 
     def _on_book_change(self, sheet, r, c):
         self.modified = True
+        self._pending_changed.add((id(sheet), sheet, r, c)) if False else \
+            self._pending_changed.add((sheet.name, r, c))
         if not self._refresh_pending:
             self._refresh_pending = True
             QTimer.singleShot(0, self._deferred_refresh)
@@ -2637,6 +2868,14 @@ class MainWindow(QMainWindow):
             self.engine.invalidate()
         except Exception:
             pass
+        pending, self._pending_changed = self._pending_changed, set()
+        by_sheet = {}
+        for name, r, c in pending:
+            by_sheet.setdefault(name, []).append((r, c))
+        for name, keys in by_sheet.items():
+            sh = self.book.sheet_by_name(name)
+            if sh is not None:
+                self.refresh_barcodes(sh, keys)
         self.update_title()
         self.view.refresh()
         self.on_current_changed()

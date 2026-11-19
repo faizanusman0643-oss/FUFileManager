@@ -193,19 +193,13 @@ def test_unknown_control_type_skipped():
         {"type": "Label", "name": "A", "caption": "a"},
         {"type": "CommandButton", "name": "B", "caption": "b"}]})
     # patch the first site's ClsidCacheIndex (21 = Label) to an unknown 99
-    f = bytearray(designer["f"])
-    idx = f.find(b"\x15\x00", f.find(b"A\x00\x00\x00") - 12)
-    i = f.find(struct_le(21, 2))
-    f[i:i + 2] = struct_le(99, 2)
-    designer["f"] = bytes(f)
+    # (the index is the last DataBlock field, right before the name "A" + padding)
+    f = designer["f"]
+    assert f.count(b"\x15\x00A\x00\x00\x00") == 1
+    designer["f"] = f.replace(b"\x15\x00A\x00\x00\x00", b"\x63\x00A\x00\x00\x00")
     form = extract_vba_modules(_project(designer=designer))[2]["form"]
     assert [c["name"] for c in form["controls"]] == ["B"]
     assert form["controls"][0]["caption"] == "b"
-    del idx
-
-
-def struct_le(v, n):
-    return int(v).to_bytes(n, "little")
 
 
 # --------------------------------------------------------------------------

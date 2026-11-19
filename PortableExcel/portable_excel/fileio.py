@@ -27,7 +27,7 @@ import re
 import struct
 import tempfile
 import zipfile
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from .model import Sheet, Workbook, literal_value
 
@@ -44,6 +44,7 @@ SUPPORTED_OPEN = "Excel files (*.xlsx *.xlsm *.xltx *.xltm);;CSV (*.csv);;All fi
 SUPPORTED_SAVE = "Excel Macro-Enabled Workbook (*.xlsm);;Excel Workbook (*.xlsx);;CSV UTF-8 (*.csv)"
 
 VBA_JSON_PART = "customXml/portableexcel_vba.json"
+META_JSON_PART = "customXml/portableexcel_meta.json"   # picture / barcode metadata
 _VBA_BIN_PART = "xl/vbaProject.bin"
 _CT_VBA = "application/vnd.ms-office.vbaProject"
 _CT_MAIN = {
@@ -273,8 +274,13 @@ def _load_ooxml(data: bytes, ext: str) -> Workbook:
     try:
         # keep_vba is not needed: the workbook is rebuilt from the model on save and
         # xl/vbaProject.bin is read (and re-injected) by this module directly.
-        wb = openpyxl.load_workbook(io.BytesIO(data), keep_vba=False,
-                                    data_only=False, keep_links=False)
+        import warnings as _warnings
+        with _warnings.catch_warnings(record=True) as caught:
+            _warnings.simplefilter("always")
+            wb = openpyxl.load_workbook(io.BytesIO(data), keep_vba=False,
+                                        data_only=False, keep_links=False)
+        load_warnings = [str(w.message) for w in caught
+                         if "image" in str(w.message).lower() or "drawing" in str(w.message).lower()]
     except Exception as exc:
         zf.close()
         raise FileFormatError(f"Cannot read the workbook: {exc}") from exc
@@ -282,6 +288,7 @@ def _load_ooxml(data: bytes, ext: str) -> Workbook:
     book = Workbook()
     book.sheets = []
     used_codes = set()
+    image_counter = [0]
     style_cache: Dict[tuple, dict] = {}
     for i, ws in enumerate(wb.worksheets, start=1):
         code = None
@@ -300,6 +307,7 @@ def _load_ooxml(data: bytes, ext: str) -> Workbook:
         sh.visible = ws.sheet_state == "visible"
         _read_cells(ws, sh, to_excel, style_cache)
         _read_dimensions(ws, sh)
+        sh.images = _read_images(ws, sh, image_counter, load_warnings)
         book.sheets.append(sh)
     if not book.sheets:
         book.sheets = [Sheet("Sheet1")]
@@ -310,6 +318,15 @@ def _load_ooxml(data: bytes, ext: str) -> Workbook:
         book.active_index = 0
 
     book.defined_names = _read_defined_names(wb)
+    if META_JSON_PART in names:
+        try:
+            _apply_image_meta(book, json.loads(zf.read(META_JSON_PART).decode("utf-8")))
+        except Exception as exc:
+            _log.warning("Cannot read picture metadata (%s)", exc)
+    for msg in load_warnings:
+        _log.warning("%s", msg)
+    # Not a model field: warnings for the GUI to show after opening (optional).
+    book.load_warnings = load_warnings
 
     # VBA
     if has_vba:
@@ -334,6 +351,190 @@ def _load_ooxml(data: bytes, ext: str) -> Workbook:
     except Exception:
         pass
     return book
+
+
+# -- pictures --------------------------------------------------------------
+_EMU_PER_PX = 9525
+_DEFAULT_COL_PX = 64
+_DEFAULT_ROW_PX = 20
+
+
+def _col_px(sh: Sheet, c: int) -> int:
+    return sh.col_widths.get(c, _DEFAULT_COL_PX)
+
+
+def _row_px(sh: Sheet, r: int) -> int:
+    return sh.row_heights.get(r, _DEFAULT_ROW_PX)
+
+
+def _span_px(size_fn, sh: Sheet, a: int, b: int) -> int:
+    """Pixels from the start of index a to the start of index b (b >= a)."""
+    return sum(size_fn(sh, i) for i in range(a, max(a, min(b, a + 20000))))
+
+
+def _abs_to_cell(size_fn, sh: Sheet, px: int):
+    i = 0
+    while px >= size_fn(sh, i) and i < 1_048_575:
+        px -= size_fn(sh, i)
+        i += 1
+    return i, px
+
+
+def _to_png(data: bytes) -> Tuple[Optional[bytes], str]:
+    """-> (PNG bytes or None, source format)."""
+    from PIL import Image as PILImage
+    with PILImage.open(io.BytesIO(data)) as im:
+        fmt = (im.format or "").lower()
+        if fmt == "png":
+            return data, fmt
+        if fmt in ("wmf", "emf"):
+            return None, fmt
+        im.load()
+        if im.mode not in ("RGB", "RGBA", "L", "LA", "P", "1"):
+            im = im.convert("RGBA")
+        out = io.BytesIO()
+        im.save(out, format="PNG")
+        return out.getvalue(), fmt
+
+
+def _read_images(ws, sh: Sheet, counter: list, load_warnings: list) -> list:
+    images = []
+    for idx, img in enumerate(getattr(ws, "_images", []) or []):
+        try:
+            ref = img.ref
+            if hasattr(ref, "seek"):
+                ref.seek(0)
+                raw = ref.read()
+            else:
+                with open(ref, "rb") as f:
+                    raw = f.read()
+            png, fmt = _to_png(raw)
+        except Exception as exc:
+            load_warnings.append(f"Picture {idx + 1} on '{sh.name}' could not be read ({exc}) "
+                                 "and was dropped.")
+            continue
+        if png is None:
+            load_warnings.append(f"Picture {idx + 1} on '{sh.name}' is in {fmt.upper()} format, "
+                                 "which is not supported; it was dropped.")
+            continue
+        name, descr = None, None
+        row = col = dx = dy = 0
+        width, height = int(img.width or 0), int(img.height or 0)
+        anchor = img.anchor
+        try:
+            child = getattr(anchor, "pic", None)
+            if child is not None and child.nvPicPr is not None:
+                name = child.nvPicPr.cNvPr.name
+                descr = child.nvPicPr.cNvPr.descr
+            kind = type(anchor).__name__
+            if kind in ("OneCellAnchor", "TwoCellAnchor"):
+                fr = anchor._from
+                row, col = int(fr.row), int(fr.col)
+                dx, dy = int(round(fr.colOff / _EMU_PER_PX)), int(round(fr.rowOff / _EMU_PER_PX))
+                if kind == "OneCellAnchor":
+                    ext = anchor.ext
+                    if ext is not None and ext.width and ext.height:
+                        width = int(round(ext.width / _EMU_PER_PX))
+                        height = int(round(ext.height / _EMU_PER_PX))
+                else:
+                    to = anchor.to
+                    width = (_span_px(_col_px, sh, col, int(to.col)) - dx
+                             + int(round(to.colOff / _EMU_PER_PX)))
+                    height = (_span_px(_row_px, sh, row, int(to.row)) - dy
+                              + int(round(to.rowOff / _EMU_PER_PX)))
+            elif kind == "AbsoluteAnchor":
+                col, dx = _abs_to_cell(_col_px, sh, int(round(anchor.pos.x / _EMU_PER_PX)))
+                row, dy = _abs_to_cell(_row_px, sh, int(round(anchor.pos.y / _EMU_PER_PX)))
+                width = int(round(anchor.ext.width / _EMU_PER_PX))
+                height = int(round(anchor.ext.height / _EMU_PER_PX))
+            elif isinstance(anchor, str):
+                from openpyxl.utils.cell import coordinate_to_tuple
+                r1, c1 = coordinate_to_tuple(anchor)
+                row, col = r1 - 1, c1 - 1
+        except Exception as exc:
+            _log.warning("Picture %d on %r: cannot read its anchor (%s)", idx + 1, sh.name, exc)
+        counter[0] += 1
+        images.append({
+            "id": f"img{counter[0]}", "name": name or f"Picture {idx + 1}",
+            "descr": descr or "",
+            "row": max(row, 0), "col": max(col, 0), "dx": max(dx, 0), "dy": max(dy, 0),
+            "width": max(width, 1), "height": max(height, 1),
+            "data": png, "fmt": "png", "barcode": None,
+        })
+    return images
+
+
+def _apply_image_meta(book: Workbook, meta: dict) -> None:
+    sheets = (meta or {}).get("images", {})
+    for sh in book.sheets:
+        entries = sheets.get(sh.name)
+        if not entries:
+            continue
+        by_name = {}
+        for img in sh.images:
+            by_name.setdefault(img["name"], img)
+        for e in entries:
+            img = by_name.get(e.get("name"))
+            if img is None:
+                i = e.get("index")
+                if not isinstance(i, int) or not 0 <= i < len(sh.images):
+                    continue
+                img = sh.images[i]
+            if e.get("id"):
+                img["id"] = str(e["id"])
+            bc = e.get("barcode")
+            img["barcode"] = dict(bc) if isinstance(bc, dict) else None
+
+
+def _write_images(ws, sh: Sheet, warnings: List[str]) -> list:
+    """Add sh.images to the openpyxl sheet; return the metadata entries."""
+    images = getattr(sh, "images", None) or []
+    if not images:
+        return []
+    from openpyxl.drawing.image import Image as XLImage
+    from openpyxl.drawing.spreadsheet_drawing import (AnchorMarker, OneCellAnchor,
+                                                      SpreadsheetDrawing)
+    from openpyxl.drawing.xdr import XDRPositiveSize2D
+    meta = []
+    used = set()
+    helper = SpreadsheetDrawing()
+    for i, im in enumerate(images):
+        try:
+            data = im.get("data")
+            if not data:
+                raise ValueError("no picture data")
+            png, _fmt = _to_png(bytes(data))
+            if png is None:
+                raise ValueError("unsupported picture format")
+            xl = XLImage(io.BytesIO(png))
+        except Exception as exc:
+            warnings.append(f"Picture '{im.get('name') or i + 1}' on '{sh.name}' "
+                            f"could not be saved ({exc}).")
+            continue
+        name = str(im.get("name") or f"Picture {i + 1}")
+        base, n = name, 2
+        while name in used:
+            name = f"{base} ({n})"
+            n += 1
+        used.add(name)
+        w = int(im.get("width") or xl.width)
+        h = int(im.get("height") or xl.height)
+        xl.width, xl.height = w, h
+        marker = AnchorMarker(col=int(im.get("col", 0)), colOff=int(im.get("dx", 0)) * _EMU_PER_PX,
+                              row=int(im.get("row", 0)), rowOff=int(im.get("dy", 0)) * _EMU_PER_PX)
+        anchor = OneCellAnchor(_from=marker, ext=XDRPositiveSize2D(w * _EMU_PER_PX, h * _EMU_PER_PX))
+        pic = helper._picture_frame(len(ws._images) + 1)
+        pic.nvPicPr.cNvPr.name = name
+        pic.nvPicPr.cNvPr.descr = str(im.get("descr") or name)
+        anchor.pic = pic
+        xl.anchor = anchor
+        ws.add_image(xl)
+        entry = {"index": len(ws._images) - 1, "name": name, "id": str(im.get("id") or "")}
+        if im.get("barcode"):
+            entry["barcode"] = {k: v for k, v in dict(im["barcode"]).items()
+                                if isinstance(v, (str, int, float, bool, type(None)))}
+        meta.append(entry)
+    return meta
 
 
 def _module_from_json(m: dict) -> dict:
@@ -1442,6 +1643,8 @@ def _csv_bytes(book: Workbook, engine, warnings: List[str], delimiter: str = ","
         warnings.append(f"CSV saves only the active sheet ('{sheet.name}').")
     if sheet.styles:
         warnings.append("Formatting is not saved in CSV.")
+    if any(getattr(s, "images", None) for s in book.sheets):
+        warnings.append("Pictures (e.g. barcodes) are not saved in CSV.")
     if book.vba_modules:
         warnings.append("Macros are not saved in CSV.")
     n_rows, n_cols = sheet.used_bounds()
@@ -1541,6 +1744,7 @@ def _ooxml_bytes(book: Workbook, ext: str, warnings: List[str]) -> bytes:
 
     names: List[str] = []
     renamed: Dict[str, str] = {}
+    image_meta: Dict[str, list] = {}
     style_cache: Dict[tuple, object] = {}   # style key -> StyleArray
     illegal = ILLEGAL_CHARACTERS_RE
     for sh in book.sheets:
@@ -1593,6 +1797,9 @@ def _ooxml_bytes(book: Workbook, ext: str, warnings: List[str]) -> bytes:
             ws.column_dimensions[get_column_letter(c + 1)].width = max(0.0, (px - 5) / 7)
         for r, px in sorted(sh.row_heights.items()):
             ws.row_dimensions[r + 1].height = round(px * 0.75, 2)
+        meta_entries = _write_images(ws, sh, warnings)
+        if meta_entries:
+            image_meta[title] = meta_entries
 
     if not wb.worksheets:  # pragma: no cover
         wb.create_sheet("Sheet1")
@@ -1633,13 +1840,18 @@ def _ooxml_bytes(book: Workbook, ext: str, warnings: List[str]) -> bytes:
     except Exception as exc:
         raise FileFormatError(f"Cannot save the workbook: {exc}") from exc
     data = buf.getvalue()
+    meta_bytes = None
+    if image_meta:
+        meta_bytes = json.dumps({"format": "portableexcel-meta", "version": 1,
+                                 "images": image_meta},
+                                ensure_ascii=False, indent=1).encode("utf-8")
     json_bytes = None
     if write_json:
         json_bytes = json.dumps(
             {"format": "portableexcel-vba", "version": 1,
              "modules": [_module_json(m) for m in book.vba_modules]},
             ensure_ascii=False, indent=1).encode("utf-8")
-    return _postprocess_zip(data, ext, vbin if macro else None, json_bytes)
+    return _postprocess_zip(data, ext, vbin if macro else None, json_bytes, meta_bytes)
 
 
 def _same_modules(modules: List[dict], vbin: bytes) -> bool:
@@ -1716,21 +1928,23 @@ def _write_defined_names(wb, defined: Dict[str, str], warnings: List[str]) -> No
 
 
 def _postprocess_zip(data: bytes, ext: str, vbin: Optional[bytes],
-                     json_bytes: Optional[bytes]) -> bytes:
-    """Fix content types for macro/template files and inject VBA parts."""
-    if ext == "xlsx" and vbin is None and json_bytes is None:
+                     json_bytes: Optional[bytes], meta_bytes: Optional[bytes] = None) -> bytes:
+    """Fix content types for macro/template files and inject VBA / JSON parts."""
+    if ext == "xlsx" and vbin is None and json_bytes is None and meta_bytes is None:
         return data
     src = zipfile.ZipFile(io.BytesIO(data))
     out_buf = io.BytesIO()
     with zipfile.ZipFile(out_buf, "w", zipfile.ZIP_DEFLATED) as dst:
         for info in src.infolist():
             name = info.filename
-            if name in (_VBA_BIN_PART, VBA_JSON_PART):
+            if name in (_VBA_BIN_PART, VBA_JSON_PART, META_JSON_PART):
                 continue
             content = src.read(name)
             if name == "[Content_Types].xml":
                 content = _fix_content_types(content.decode("utf-8"), ext,
-                                             vbin is not None, json_bytes is not None).encode("utf-8")
+                                             vbin is not None,
+                                             json_bytes is not None or meta_bytes is not None
+                                             ).encode("utf-8")
             elif name == "xl/_rels/workbook.xml.rels" and vbin is not None:
                 content = _add_vba_rel(content.decode("utf-8")).encode("utf-8")
             dst.writestr(info, content, compress_type=zipfile.ZIP_DEFLATED)
@@ -1738,6 +1952,8 @@ def _postprocess_zip(data: bytes, ext: str, vbin: Optional[bytes],
             dst.writestr(_VBA_BIN_PART, vbin, compress_type=zipfile.ZIP_DEFLATED)
         if json_bytes is not None:
             dst.writestr(VBA_JSON_PART, json_bytes, compress_type=zipfile.ZIP_DEFLATED)
+        if meta_bytes is not None:
+            dst.writestr(META_JSON_PART, meta_bytes, compress_type=zipfile.ZIP_DEFLATED)
     src.close()
     return out_buf.getvalue()
 

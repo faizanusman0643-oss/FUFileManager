@@ -209,6 +209,13 @@ class SheetOpsMixin:
 
     def after_write(self, sheet, r1, c1, r2, c2):
         self.engine_invalidate()
+        imgs = getattr(sheet, "images", None)
+        if imgs and any(im.get("barcode") for im in imgs):
+            try:
+                from .. import barcodes
+                barcodes.refresh_barcodes(self.book, self.engine, sheet)
+            except Exception:
+                pass
         if self.app.enableevents and self.event_depth < 30:
             self.notify_change(sheet, r1, c1, r2, c2)
 

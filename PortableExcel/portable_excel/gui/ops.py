@@ -160,7 +160,8 @@ def snapshot_book(book) -> dict:
     return {
         "sheets": [(sh, sh.name, sh.code_name, dict(sh.cells),
                     {k: dict(v) for k, v in sh.styles.items()},
-                    dict(sh.col_widths), dict(sh.row_heights), sh.visible)
+                    dict(sh.col_widths), dict(sh.row_heights), sh.visible,
+                    copy.deepcopy(getattr(sh, "images", [])))
                    for sh in book.sheets],
         "active": book.active_index,
         "names": dict(book.defined_names),
@@ -169,7 +170,7 @@ def snapshot_book(book) -> dict:
 
 def restore_book(book, snap: dict) -> None:
     sheets = []
-    for (sh, name, code, cells, styles, cw, rh, vis) in snap["sheets"]:
+    for (sh, name, code, cells, styles, cw, rh, vis, images) in snap["sheets"]:
         sh.name = name
         sh.code_name = code
         sh.cells = dict(cells)
@@ -177,6 +178,8 @@ def restore_book(book, snap: dict) -> None:
         sh.col_widths = dict(cw)
         sh.row_heights = dict(rh)
         sh.visible = vis
+        if hasattr(sh, "images"):
+            sh.images[:] = copy.deepcopy(images)
         sheets.append(sh)
     book.sheets[:] = sheets
     book.active_index = min(snap["active"], len(sheets) - 1)

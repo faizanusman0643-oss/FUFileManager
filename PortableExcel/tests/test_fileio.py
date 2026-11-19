@@ -727,3 +727,135 @@ def test_public_constants():
     assert "*.xlsm" in fileio.SUPPORTED_OPEN and "*.csv" in fileio.SUPPORTED_OPEN
     assert fileio.SUPPORTED_SAVE.startswith("Excel Macro-Enabled Workbook (*.xlsm)")
     assert issubclass(PasswordRequired, Exception) and issubclass(FileFormatError, Exception)
+
+
+# --------------------------------------------------------------------------
+# pictures (barcodes) in .xlsx / .xlsm
+# --------------------------------------------------------------------------
+def _png(color, size=(40, 20), fmt="PNG"):
+    from PIL import Image as PILImage
+    b = io.BytesIO()
+    PILImage.new("RGB", size, color).save(b, fmt)
+    return b.getvalue()
+
+
+BARCODE_META = {"symbology": "code128", "source": "A2", "text": "", "show_text": True,
+                "module_px": 2, "bar_height_px": 40}
+
+
+def _image_book():
+    b = Workbook()
+    s = b.active
+    s.set_raw(1, 0, "12345")
+    s.images = [
+        {"id": "bc1", "name": "Barcode 1", "row": 1, "col": 2, "dx": 3, "dy": 4,
+         "width": 120, "height": 50, "data": _png("black", (120, 50)), "fmt": "png",
+         "barcode": dict(BARCODE_META)},
+        {"id": "logo", "name": "Logo", "row": 5, "col": 0, "dx": 0, "dy": 0,
+         "width": 40, "height": 20, "data": _png("blue"), "fmt": "png", "barcode": None},
+    ]
+    return b
+
+
+def test_images_round_trip(tmp_path):
+    from PIL import Image as PILImage
+    b = _image_book()
+    p = str(tmp_path / "pics.xlsx")
+    assert save_workbook(b, p) == []
+    zf = zipfile.ZipFile(p)
+    meta = json.loads(zf.read(fileio.META_JSON_PART))
+    assert [e["name"] for e in meta["images"]["Sheet1"]] == ["Barcode 1", "Logo"]
+    assert all("data" not in e for e in meta["images"]["Sheet1"])
+    assert meta["images"]["Sheet1"][0]["barcode"] == BARCODE_META
+    assert '<Default Extension="json" ContentType="application/json"/>' in \
+        zf.read("[Content_Types].xml").decode()
+    zf.close()
+
+    # openpyxl (and so Excel) sees two real pictures at the right anchors
+    wb = openpyxl.load_workbook(p)
+    imgs = wb.active._images
+    assert len(imgs) == 2
+    a0, a1 = imgs[0].anchor, imgs[1].anchor
+    assert type(a0).__name__ == "OneCellAnchor"
+    assert (a0._from.row, a0._from.col, a0._from.colOff, a0._from.rowOff) == (1, 2, 3 * 9525, 4 * 9525)
+    assert (a0.ext.width, a0.ext.height) == (120 * 9525, 50 * 9525)
+    assert a0.pic.nvPicPr.cNvPr.name == "Barcode 1"
+    assert (a1._from.row, a1._from.col) == (5, 0)
+
+    s = load_workbook(p).active
+    assert len(s.images) == 2
+    bc, logo = s.images
+    for got, exp in zip(s.images, b.active.images):
+        for key in ("id", "name", "row", "col", "dx", "dy", "width", "height", "fmt", "barcode"):
+            assert got[key] == exp[key], key
+    with PILImage.open(io.BytesIO(bc["data"])) as im:
+        assert im.format == "PNG" and im.size == (120, 50)
+    assert logo["barcode"] is None
+
+    # a second generation keeps everything
+    p2 = str(tmp_path / "pics2.xlsx")
+    save_workbook(load_workbook(p), p2)
+    assert [i["barcode"] for i in load_workbook(p2).active.images] == [BARCODE_META, None]
+
+
+def test_images_without_meta_and_two_cell_anchor(tmp_path):
+    from openpyxl.drawing.image import Image as XLImage
+    from openpyxl.drawing.spreadsheet_drawing import AnchorMarker, TwoCellAnchor
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.column_dimensions["B"].width = 20          # 145 px
+    ws.row_dimensions[3].height = 30              # 40 px
+    img = XLImage(io.BytesIO(_png("red", (50, 50))))
+    img.anchor = TwoCellAnchor(_from=AnchorMarker(col=1, colOff=9525 * 5, row=2, rowOff=0),
+                               to=AnchorMarker(col=3, colOff=9525 * 10, row=4, rowOff=9525 * 2))
+    ws.add_image(img)
+    jpg = XLImage(io.BytesIO(_png("green", (30, 10), "JPEG")))
+    jpg.anchor = "E7"
+    ws.add_image(jpg)
+    p = str(tmp_path / "two.xlsx")
+    wb.save(p)
+    s = load_workbook(p).active
+    assert len(s.images) == 2
+    a, b = sorted(s.images, key=lambda i: i["row"])   # anchor types may be reordered
+    assert (a["row"], a["col"], a["dx"], a["dy"]) == (2, 1, 5, 0)
+    # cols B (145) + C (64) - 5 + 10 ; rows 3 (40) + 4 (20) + 2
+    assert (a["width"], a["height"]) == (145 + 64 - 5 + 10, 40 + 20 + 2)
+    assert a["barcode"] is None and a["fmt"] == "png"
+    assert a["data"][:8] == b"\x89PNG\r\n\x1a\n"
+    assert (b["row"], b["col"]) == (6, 4)
+    assert b["data"][:8] == b"\x89PNG\r\n\x1a\n"     # JPEG converted to PNG
+    assert len({a["id"], b["id"]}) == 2
+    # user pictures survive a load/save round trip
+    p2 = str(tmp_path / "two2.xlsx")
+    save_workbook(load_workbook(p), p2)
+    assert len(openpyxl.load_workbook(p2).active._images) == 2
+
+
+def test_images_with_macros_and_multiple_sheets(tmp_path, vba_bin):
+    b = _xlsm_book(vba_bin)
+    b.sheets[1].images = _image_book().active.images
+    p = str(tmp_path / "both.xlsm")
+    save_workbook(b, p)
+    zf = zipfile.ZipFile(p)
+    assert zf.read("xl/vbaProject.bin") == vba_bin
+    assert list(json.loads(zf.read(fileio.META_JSON_PART))["images"]) == ["Data"]
+    b2 = load_workbook(p)
+    assert b2.sheets[0].images == []
+    assert [i["barcode"] for i in b2.sheets[1].images] == [BARCODE_META, None]
+    assert {m["name"] for m in b2.vba_modules} == set(_expected_modules())
+
+
+def test_bad_image_data_warns(tmp_path):
+    b = Workbook()
+    b.active.images = [{"id": "x", "name": "Broken", "row": 0, "col": 0, "dx": 0, "dy": 0,
+                        "width": 10, "height": 10, "data": b"not an image", "fmt": "png",
+                        "barcode": None}]
+    p = str(tmp_path / "bad.xlsx")
+    warnings = save_workbook(b, p)
+    assert any("Broken" in w for w in warnings)
+    assert load_workbook(p).active.images == []
+
+
+def test_csv_warns_about_pictures(tmp_path):
+    warnings = save_workbook(_image_book(), str(tmp_path / "p.csv"))
+    assert any("Pictures" in w and "not saved" in w for w in warnings)

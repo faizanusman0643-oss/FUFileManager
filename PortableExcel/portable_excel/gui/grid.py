@@ -604,6 +604,9 @@ class GridBase(QTableView):
                     p.fillRect(h.adjusted(-1, -1, 1, 1), QColor("#ffffff"))
                     p.fillRect(h, GREEN)
             # active cell outline inside a multi-cell selection
+        imgs = getattr(main.ctx, "images", None)
+        if imgs is not None:
+            imgs.paint(self, p)
         if main.fill_drag is not None and main.fill_drag.get("dst"):
             r1, c1, r2, c2 = main.fill_drag["dst"]
             rr = self.range_rect(r1, c1, r2, c2).intersected(vw)
@@ -1125,6 +1128,16 @@ class SpreadsheetView(GridBase):
         shift = bool(mods & Qt.ShiftModifier)
         alt = bool(mods & Qt.AltModifier)
         r, c = self.current_cell()
+        imgs = self.ctx.images
+        if imgs.selected:
+            if key in (Qt.Key_Delete, Qt.Key_Backspace):
+                imgs.delete_selected()
+                return
+            if key == Qt.Key_Escape:
+                imgs.select(None)
+                return
+            if not ctrl:
+                imgs.select(None)
         arrows = {Qt.Key_Up: (-1, 0), Qt.Key_Down: (1, 0), Qt.Key_Left: (0, -1),
                   Qt.Key_Right: (0, 1)}
         if key in arrows and not alt:
@@ -1361,6 +1374,8 @@ class SpreadsheetView(GridBase):
         if self.is_editing() and e.button() == Qt.LeftButton:
             self.commit_open_editor()
         self.ctx.formula_bar_focus_lost_commit()
+        if self.ctx.images.mouse_press(self, e.position().toPoint(), e):
+            return
         if e.button() == Qt.LeftButton and self._on_handle(e.position().toPoint()):
             self.fill_drag = {"src": self.active_range(), "dst": None}
             return
@@ -1378,6 +1393,8 @@ class SpreadsheetView(GridBase):
 
     def mouseMoveEvent(self, e):
         if self.handle_point_move(self, e):
+            return
+        if self.ctx.images.mouse_move(self, e.position().toPoint(), e):
             return
         if self.fill_drag is not None:
             idx = self.indexAt(e.position().toPoint())
@@ -1405,6 +1422,8 @@ class SpreadsheetView(GridBase):
             self.point_state["drag"] = False
             ed.setFocus()
             return
+        if self.ctx.images.mouse_release(self, e.position().toPoint(), e):
+            return
         if self.fill_drag is not None:
             fd, self.fill_drag = self.fill_drag, None
             if fd.get("dst"):
@@ -1414,6 +1433,8 @@ class SpreadsheetView(GridBase):
         super().mouseReleaseEvent(e)
 
     def mouseDoubleClickEvent(self, e):
+        if self.ctx.images.mouse_double(self, e.position().toPoint()):
+            return
         if self._on_handle(e.position().toPoint()):
             self.ctx.fill_handle_double_click()
             return
@@ -1425,6 +1446,9 @@ class SpreadsheetView(GridBase):
         super().mouseDoubleClickEvent(e)
 
     def contextMenuEvent(self, e):
+        img, _h = self.ctx.images.hit(self, e.pos())
+        if img is not None:
+            return
         self.ctx.show_cell_menu(e.globalPos())
 
     def focusInEvent(self, e):

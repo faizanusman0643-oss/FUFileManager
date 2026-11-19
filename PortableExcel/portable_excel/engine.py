@@ -3513,6 +3513,43 @@ def insert_delete(book, sheet, axis: str, index: int, count: int) -> None:
     fn = make_fn(None)
     for k, v in list(book.defined_names.items()):
         book.defined_names[k] = _rewrite_name_value(v, fn)
+    _shift_images(sheet, rows, index, count, limit)
+
+
+def _shift_images(sheet, rows, index, count, limit):
+    """Move floating images (Sheet.images) anchored after the insert/delete
+    point; images on deleted rows/cols move to the first surviving one.
+    Barcode source references shift like formula references."""
+    import re as _re
+    key = "row" if rows else "col"
+    for img in getattr(sheet, "images", None) or []:
+        p = int(img.get(key, 0))
+        np_ = _adj_single(p, index, count, limit)
+        if np_ is None:
+            np_ = min(index, limit - 1) if count < 0 else limit - 1
+        img[key] = np_
+        bc = img.get("barcode")
+        src = bc.get("source") if isinstance(bc, dict) else None
+        if not src or "#REF" in src.upper():
+            continue
+        m = _re.match(r"^((?:'[^']+'|[^!]+)!)?(\$?)([A-Za-z]{1,3})(\$?)(\d+)$", src.strip())
+        if not m:
+            continue
+        if m.group(1):
+            ref_sheet = m.group(1)[:-1].strip("'")
+            if ref_sheet.lower() != sheet.name.lower():
+                continue
+        r = int(m.group(5)) - 1
+        c = name_to_col(m.group(3))
+        q = _adj_single(r if rows else c, index, count, limit)
+        if q is None:
+            bc["source"] = "#REF!"
+            continue
+        if rows:
+            r = q
+        else:
+            c = q
+        bc["source"] = f"{m.group(1) or ''}{m.group(2)}{col_to_name(c)}{m.group(4)}{r + 1}"
 
 
 def _err_text(ref: _Ref) -> str:

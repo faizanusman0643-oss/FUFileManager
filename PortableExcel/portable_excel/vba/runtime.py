@@ -978,11 +978,54 @@ class VBARuntime(SheetOpsMixin, FileIOMixin):
         return self._top(go)
 
     def run_nested(self, name, args):
+        if name.strip().lower().split("!")[-1] == "pe_addbarcode":
+            return self.pe_add_barcode(list(args))
         p = self.find_proc(name)
         if p is None:
             raise VBARuntimeErr(1004, f"Cannot run the macro '{name}'. The macro may not be available in this workbook.")
         me = self.doc_object_for_module(p.module) if p.module.type == "document" else None
         return self.invoke(p, list(args), {}, me)[0]
+
+    def pe_add_barcode(self, args):
+        """PortableExcel extension:
+        Application.Run "PE_AddBarcode", Source, Symbology, Anchor[, Text]
+        Source: cell address whose displayed value is encoded ("" = use Text);
+        Anchor: cell where the picture's top-left goes. Returns the shape name."""
+        from .. import barcodes
+        from .excel import RangeObj
+        args = list(args) + [MISSING] * 4
+        src, sym, anchor, text = args[:4]
+        if sym is MISSING or anchor is MISSING:
+            raise rt_error(449)
+        sheet = None
+        src_addr = None
+        if isinstance(src, RangeObj):
+            sheet = src.sheet
+            src_addr = src.address(False, False).split(":")[0]
+        elif src is not MISSING and to_str(src):
+            rng = self.range_from_address(to_str(src), None)
+            sheet = rng.sheet
+            src_addr = rng.address(False, False).split(":")[0]
+        a = anchor if isinstance(anchor, RangeObj) else \
+            self.range_from_address(to_str(anchor), sheet)
+        sheet = a.sheet if sheet is None else sheet
+        if a.sheet is not sheet:
+            raise VBARuntimeErr(1004, "PE_AddBarcode: source and anchor must be on the same sheet")
+        try:
+            img = barcodes.make_barcode_image(
+                sheet, src_addr, None if text is MISSING else to_str(text), to_str(sym),
+                engine=self.engine, row=a.r1, col=a.c1)
+        except ValueError as e:
+            raise VBARuntimeErr(5, f"PE_AddBarcode: {e}")
+        sheet.images.append(img)
+        h = getattr(self.host, "images_changed", None)
+        if h is not None:
+            try:
+                h(sheet)
+            except Exception:
+                pass
+        self.host_refresh_soft()
+        return img["name"]
 
     def _wrap_event_arg(self, a):
         from ..model import Sheet

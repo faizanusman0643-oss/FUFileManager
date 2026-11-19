@@ -1269,7 +1269,8 @@ class WorksheetObj(DocMixin, VBAObject):
         return 8.43
 
     def g_shapes(self, a, n):
-        return NoOpObj("Shapes", {"count": 0})
+        c = ShapesColl(self.rt, self.sheet)
+        return c.g_item(a, n) if a else c
 
     def g_listobjects(self, a, n):
         return NoOpObj("ListObjects", {"count": 0})
@@ -2111,3 +2112,137 @@ _APP_NOOP = {"interactive": True, "cursor": -4143, "displaystatusbar": True,
              "enablelivepreview": True, "automationsecurity": 1, "editdirectlyincell": True,
              "showstartupdialog": False, "displayexcel4menus": False, "warnonfunctionnameconflict": False,
              "errorcheckingoptions": None, "autocorrect": None, "filevalidation": 0}
+
+
+# --------------------------------------------------------------------------
+# Shapes over Sheet.images (pictures / barcodes)
+# --------------------------------------------------------------------------
+def _px_to_pt(px):
+    return round(px * 0.75, 2)
+
+
+class ShapesColl(VBAObject):
+    vba_typename = "Shapes"
+
+    def __init__(self, rt, sheet):
+        self.rt = rt
+        self.sheet = sheet
+
+    def _imgs(self):
+        return getattr(self.sheet, "images", None) or []
+
+    def g_count(self, a, n):
+        return len(self._imgs())
+
+    def g_item(self, args, named):
+        ix = to_value(args[0])
+        imgs = self._imgs()
+        if isinstance(ix, str):
+            for im in imgs:
+                if im.get("name", "").lower() == ix.lower():
+                    return ShapeObj(self.rt, self.sheet, im)
+            raise VBARuntimeErr(-2147024809, "The item with the specified name wasn't found.")
+        i = index_int(ix)
+        if 1 <= i <= len(imgs):
+            return ShapeObj(self.rt, self.sheet, imgs[i - 1])
+        raise VBARuntimeErr(-2147024809, "The index into the specified collection is out of bounds.")
+
+    g__default = g_item
+    g_range = g_item
+
+    def vba_iter(self):
+        return [ShapeObj(self.rt, self.sheet, im) for im in self._imgs()]
+
+    def g_addpicture(self, a, n):
+        raise VBARuntimeErr(5, "Shapes.AddPicture is not supported; use Application.Run \"PE_AddBarcode\" for barcodes")
+
+
+class ShapeObj(VBAObject):
+    vba_typename = "Shape"
+
+    def __init__(self, rt, sheet, img):
+        self.rt = rt
+        self.sheet = sheet
+        self.img = img
+
+    def vba_same(self, other):
+        return isinstance(other, ShapeObj) and other.img is self.img
+
+    def _cell_left(self, c):
+        return sum(self.sheet.col_widths.get(i, 64) for i in range(c))
+
+    def _cell_top(self, r):
+        return sum(self.sheet.row_heights.get(i, 20) for i in range(min(r, 200000)))
+
+    def g_name(self, a, n):
+        return self.img.get("name", "")
+
+    def s_name(self, a, n, v):
+        self.img["name"] = to_str(v)
+
+    def g_left(self, a, n):
+        return _px_to_pt(self._cell_left(self.img.get("col", 0)) + self.img.get("dx", 0))
+
+    def g_top(self, a, n):
+        return _px_to_pt(self._cell_top(self.img.get("row", 0)) + self.img.get("dy", 0))
+
+    def s_left(self, a, n, v):
+        px = int(round(to_double(v) / 0.75))
+        c = 0
+        while c < MAX_COLS - 1 and self._cell_left(c + 1) <= px:
+            c += 1
+        self.img["col"] = c
+        self.img["dx"] = px - self._cell_left(c)
+        self.rt.host_refresh_soft()
+
+    def s_top(self, a, n, v):
+        px = int(round(to_double(v) / 0.75))
+        r = 0
+        acc = 0
+        while r < MAX_ROWS - 1 and acc + self.sheet.row_heights.get(r, 20) <= px:
+            acc += self.sheet.row_heights.get(r, 20)
+            r += 1
+        self.img["row"] = r
+        self.img["dy"] = px - acc
+        self.rt.host_refresh_soft()
+
+    def g_width(self, a, n):
+        return _px_to_pt(self.img.get("width", 0))
+
+    def s_width(self, a, n, v):
+        self.img["width"] = max(1, int(round(to_double(v) / 0.75)))
+        self.rt.host_refresh_soft()
+
+    def g_height(self, a, n):
+        return _px_to_pt(self.img.get("height", 0))
+
+    def s_height(self, a, n, v):
+        self.img["height"] = max(1, int(round(to_double(v) / 0.75)))
+        self.rt.host_refresh_soft()
+
+    def g_topleftcell(self, a, n):
+        return RangeObj(self.rt, self.sheet, self.img.get("row", 0), self.img.get("col", 0),
+                        self.img.get("row", 0), self.img.get("col", 0))
+
+    def g_type(self, a, n):
+        return 13   # msoPicture
+
+    def g_delete(self, a, n):
+        imgs = self.sheet.images
+        if self.img in imgs:
+            imgs.remove(self.img)
+        self.rt.host_refresh_soft()
+        return EMPTY
+
+    def g_visible(self, a, n):
+        return True
+
+    def s_visible(self, a, n, v):
+        pass
+
+    def g_alternativetext(self, a, n):
+        bc = self.img.get("barcode") or {}
+        return bc.get("text") or bc.get("source") or ""
+
+    def g_select(self, a, n):
+        return EMPTY
