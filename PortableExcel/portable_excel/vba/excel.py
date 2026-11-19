@@ -1824,7 +1824,7 @@ class ApplicationObj(VBAObject):
         return self._ws().g_columns(a, n)
 
     def g_activecell(self, a, n):
-        s = self.rt.selection_tuple()
+        s = self.rt.active_cell_tuple()
         return RangeObj(self.rt, s[0], s[1], s[2], s[1], s[2])
 
     def g_selection(self, a, n):

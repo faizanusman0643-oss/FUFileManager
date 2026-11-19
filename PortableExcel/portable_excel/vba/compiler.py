@@ -413,7 +413,10 @@ class Compiler:
 
     def s_SCall(self, st):
         fn = self.c_callstmt(st)
-        self.emit(fn, st.line)
+
+        def ins(f):
+            fn(f)
+        self.emit(ins, st.line)
 
     def s_SIf(self, st):
         end = Label()
