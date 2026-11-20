@@ -1489,13 +1489,7 @@ class Compiler:
                     return obj.vba_get(mname, args, named)
                 return call
             if k == "declare":
-                dname = b[1]
-
-                def call(f):
-                    e = VBARuntimeErr(5, f"Windows API calls are not supported ({dname})")
-                    e.fatal = True
-                    raise e
-                return call
+                return self.c_apicall(b[1], arg_nodes)
             if k == "form":
                 fmod = b[1]
                 if not arg_nodes:
@@ -1635,9 +1629,12 @@ class Compiler:
                 return lambda f: rt.doc_object_for_module(m)
             return lambda f: f.me
         if t is A.AddressOf:
-            def fail(f):
-                raise VBARuntimeErr(5, "AddressOf is not supported")
-            return fail
+            b = self.resolve(node.name, implicit=False, line=node.line)
+            if b is None or b[0] != "proc":
+                self.error("Expected Sub, Function, or Property", node.line)
+            rt = self.rt
+            proc = b[1]
+            return lambda f: rt.addressof(proc)
         self.error("Syntax error in expression", getattr(node, "line", None))
 
     def c_ident(self, node):
@@ -1783,14 +1780,40 @@ class Compiler:
                 return bi.call(rt, args, named)
             return call
         if k == "declare":
-            dname = r[1]
-
-            def call(f):
-                e = VBARuntimeErr(5, f"Windows API calls are not supported ({dname})")
-                e.fatal = True
-                raise e
-            return call
+            return self.c_apicall(r[1], arg_nodes)
         self.error(f"Method or data member not found: {name}", line)
+
+    def c_apicall(self, dname, arg_nodes):
+        """Declare'd Windows API function: emulated by rt.api (apiemu.py)."""
+        rt = self.rt
+        pos = []
+        stores = []
+        for i, a in enumerate(arg_nodes):
+            pos.append(self.c_expr(a.expr) if a.expr is not None else None)
+            st = None
+            e = a.expr
+            if e is not None and not a.byval:
+                if type(e) is A.Ident:
+                    bb = self.resolve(e.name, implicit=False)
+                    if bb is not None and bb[0] == "var":
+                        st = self.var_store(bb[1], None)
+                elif type(e) is A.Index and type(e.base) is A.Ident:
+                    bb = self.resolve(e.base.name, implicit=False)
+                    if bb is not None and bb[0] == "var" and not bb[1].retval:
+                        try:
+                            st = self.make_store(e, None)
+                        except VBACompileErr:
+                            st = None
+            stores.append(st)
+
+        def call(f):
+            args = [MISSING if p is None else p(f) for p in pos]
+            res, outs = rt.api.call(dname, args)
+            for i, v in outs.items():
+                if i < len(stores) and stores[i] is not None:
+                    stores[i](f, v)
+            return res
+        return call
 
 
 def compile_module_expr(rt, module, expr):

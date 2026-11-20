@@ -355,6 +355,10 @@ class VBARuntime(SheetOpsMixin, FileIOMixin):
         self.event_depth = 0
         self.running = 0
         self.udf_depth = 0
+        from .apiemu import ApiEmulator
+        self.api = ApiEmulator(self)
+        self.addressof_procs = {}
+        self._clip_text = None
         import weakref
         self.we_holders = weakref.WeakSet()
         self.udf_steps = 0
@@ -1050,6 +1054,44 @@ class VBARuntime(SheetOpsMixin, FileIOMixin):
             return float(res)
         except Exception:
             return to_str(res)
+
+    def addressof(self, proc):
+        for k, p in self.addressof_procs.items():
+            if p is proc:
+                return k
+        addr = 0x7F100000 + 16 * len(self.addressof_procs)
+        self.addressof_procs[addr] = proc
+        return addr
+
+    def mouse_wheel(self, delta, x=None, y=None, instance=None):
+        """GUI -> runtime: the mouse wheel turned (delta: +120 per notch up).
+
+        Calls VBA low-level mouse hooks registered with SetWindowsHookEx
+        (WH_MOUSE_LL / WH_MOUSE) as the real hook would. Returns True when a
+        hook handled it (the GUI should then not scroll by itself)."""
+        from .apiemu import WM_MOUSEWHEEL, HOOK_LPARAM
+        handled = False
+        hooks = [h for h in self.api.hooks.values() if h[1] is not None and h[0] in (7, 14)]
+        if not hooks:
+            return False
+        if x is None or y is None:
+            inst = instance or next((i for i in reversed(self.live_forms) if i.visible), None)
+            if inst is not None:
+                l, t, r, b = self.api.form_rect(inst)
+                x, y = (l + r) // 2, (t + b) // 2
+            else:
+                x, y = 0, 0
+        self.api.cursor = (int(x), int(y))
+        self.api.wheel_delta = int(delta)
+        try:
+            for idhook, proc in hooks:
+                out = self._top(lambda proc=proc: self.invoke(proc, [0, WM_MOUSEWHEEL, HOOK_LPARAM], {}, None))
+                if out is not None and out[0] not in (0, EMPTY, False):
+                    handled = True
+        finally:
+            self.api.cursor = None
+            self.api.wheel_delta = 0
+        return handled
 
     def list_macros(self):
         out = []
