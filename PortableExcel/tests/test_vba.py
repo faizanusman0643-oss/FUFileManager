@@ -977,15 +977,15 @@ End Function''', [{"name": "Sheet1", "type": "document", "code": "Sub SheetMacro
 def test_userform_without_gui_and_api_declare():
     rt, book, eng, host = make('''
 #If VBA7 Then
-Private Declare PtrSafe Function GetTickCount Lib "kernel32" () As Long
+Private Declare PtrSafe Function ShellExecute Lib "kernel32" () As Long
 #Else
-Private Declare Function GetTickCount Lib "kernel32" () As Long
+Private Declare Function ShellExecute Lib "kernel32" () As Long
 #End If
 Sub ShowForm()
     UserForm1.Show
 End Sub
 Sub CallApi()
-    Debug.Print GetTickCount()
+    Debug.Print ShellExecute()
 End Sub
 Sub UseShell()
     Shell "calc.exe"

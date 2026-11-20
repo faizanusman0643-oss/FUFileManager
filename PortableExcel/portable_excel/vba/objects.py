@@ -799,3 +799,44 @@ class TextStream(VBAObject):
         except Exception:
             pass
         return EMPTY
+
+
+class DataObj(VBAObject):
+    """MSForms.DataObject (clipboard text)."""
+    vba_typename = "DataObject"
+
+    def __init__(self, rt):
+        self.rt = rt
+        self.text = None
+
+    def g_settext(self, args, named):
+        txt, fmt = bind(args, named, ["text", "format"], 1)
+        self.text = to_str(txt)
+        return EMPTY
+
+    def g_gettext(self, args, named):
+        if self.text is None:
+            raise VBARuntimeErr(-2147221404, "DataObject:GetText Invalid FORMATETC structure")
+        return self.text
+
+    def g_getformat(self, args, named):
+        return self.text is not None
+
+    def g_clear(self, a, n):
+        self.text = None
+        return EMPTY
+
+    def g_putinclipboard(self, a, n):
+        h = getattr(self.rt.host, "set_clipboard_text", None)
+        if h is not None:
+            h("" if self.text is None else self.text)
+        else:
+            self.rt._clip_text = self.text
+        return EMPTY
+
+    def g_getfromclipboard(self, a, n):
+        h = getattr(self.rt.host, "get_clipboard_text", None)
+        self.text = h() if h is not None else self.rt._clip_text
+        return EMPTY
+
+    g_startdrag = g_clear

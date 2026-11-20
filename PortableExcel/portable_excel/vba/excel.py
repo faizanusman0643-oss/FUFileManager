@@ -667,7 +667,13 @@ class RangeObj(VBAObject):
         raise VBARuntimeErr(5, "Range.TextToColumns is not supported in PortableExcel")
 
     def g_printout(self, a, n):
-        raise VBARuntimeErr(5, "Printing is not supported in PortableExcel")
+        return _print_out(self.rt, self.sheet, (self.r1, self.c1, self.r2, self.c2), a, n)
+
+    def g_printpreview(self, a, n):
+        return _print_preview(self.rt, self.sheet, (self.r1, self.c1, self.r2, self.c2))
+
+    def g_exportasfixedformat(self, a, n):
+        return _export_pdf(self.rt, self.sheet, (self.r1, self.c1, self.r2, self.c2), a, n)
 
     def g_addcomment(self, a, n):
         return NoOpObj("Comment")
@@ -1309,9 +1315,13 @@ class WorksheetObj(DocMixin, VBAObject):
         pass
 
     def g_printout(self, a, n):
-        raise VBARuntimeErr(5, "Printing is not supported in PortableExcel")
+        return _print_out(self.rt, self.sheet, _sheet_print_rect(self.rt, self.sheet), a, n)
 
-    g_printpreview = g_printout
+    def g_printpreview(self, a, n):
+        return _print_preview(self.rt, self.sheet, _sheet_print_rect(self.rt, self.sheet))
+
+    def g_exportasfixedformat(self, a, n):
+        return _export_pdf(self.rt, self.sheet, _sheet_print_rect(self.rt, self.sheet), a, n)
 
     def g_scrollarea(self, a, n):
         return ""
@@ -1391,7 +1401,13 @@ class SheetsColl(VBAObject):
         raise VBARuntimeErr(5, "Copying all sheets to a new workbook is not supported")
 
     def g_printout(self, a, n):
-        raise VBARuntimeErr(5, "Printing is not supported in PortableExcel")
+        for ws in self.vba_iter():
+            ws.g_printout(a, n)
+        return EMPTY
+
+    def g_printpreview(self, a, n):
+        sh = self.rt.book.active
+        return _print_preview(self.rt, sh, _sheet_print_rect(self.rt, sh))
 
 
 class NamesObj(VBAObject):
@@ -1526,7 +1542,22 @@ class WorkbookObj(DocMixin, VBAObject):
         h(to_str(fn))
         return EMPTY
 
-    g_savecopyas = g_saveas
+    def g_savecopyas(self, args, named):
+        (fn,) = bind(args, named, ["filename"], 1)
+        self.rt.save_copy_as(self.rt.resolve_path(to_str(fn)))
+        return EMPTY
+
+    def g_printout(self, a, n):
+        sh = self.rt.book.active
+        return _print_out(self.rt, sh, _sheet_print_rect(self.rt, sh), a, n)
+
+    def g_printpreview(self, a, n):
+        sh = self.rt.book.active
+        return _print_preview(self.rt, sh, _sheet_print_rect(self.rt, sh))
+
+    def g_exportasfixedformat(self, a, n):
+        sh = self.rt.book.active
+        return _export_pdf(self.rt, sh, _sheet_print_rect(self.rt, sh), a, n)
 
     def g_close(self, a, n):
         return EMPTY
@@ -1605,7 +1636,7 @@ class WorkbooksColl(VBAObject):
         return [self.rt.workbook]
 
     def g_open(self, a, n):
-        raise VBARuntimeErr(1004, "Opening other workbooks from VBA is not supported in PortableExcel")
+        raise VBARuntimeErr(1004, "Workbooks.Open is not supported yet in PortableExcel")
 
     def g_add(self, a, n):
         raise VBARuntimeErr(1004, "Creating new workbooks from VBA is not supported in PortableExcel")
@@ -2033,18 +2064,38 @@ class ApplicationObj(VBAObject):
         return EMPTY
 
     def g_getopenfilename(self, args, named):
+        flt, idx, title, btn, multi = bind(args, named, ["filefilter", "filterindex", "title",
+                                                          "buttontext", "multiselect"])
         h = getattr(self.rt.host, "get_open_filename", None)
         if h is None:
             return False
-        r = h()
-        return False if not r else r
+        ms = multi is not MISSING and to_bool(multi)
+        try:
+            r = h(filter="" if flt is MISSING else to_str(flt),
+                  title="" if title is MISSING else to_str(title), multi=ms)
+        except TypeError:
+            r = h()
+        if not r:
+            return False
+        if ms:
+            if isinstance(r, str):
+                r = [r]
+            return VBAArray.from_list(list(r), 1)
+        return r if isinstance(r, str) else r[0]
 
     def g_getsaveasfilename(self, args, named):
+        init, flt, idx, title, btn = bind(args, named, ["initialfilename", "filefilter",
+                                                         "filterindex", "title", "buttontext"])
         h = getattr(self.rt.host, "get_save_filename", None)
         if h is None:
             return False
-        r = h()
-        return False if not r else r
+        try:
+            r = h(initial="" if init is MISSING else to_str(init),
+                  filter="" if flt is MISSING else to_str(flt),
+                  title="" if title is MISSING else to_str(title))
+        except TypeError:
+            r = h()
+        return r if r else False
 
     def g_filedialog(self, a, n):
         raise VBARuntimeErr(5, "Application.FileDialog is not supported in PortableExcel")
@@ -2074,6 +2125,8 @@ class ApplicationObj(VBAObject):
         return NoOpObj("CommandBars")
 
     def g_dialogs(self, a, n):
+        if a:
+            return DialogObj(self.rt, index_int(to_value(a[0])))
         return NoOpObj("Dialogs")
 
     def g_addins(self, a, n):
@@ -2246,3 +2299,85 @@ class ShapeObj(VBAObject):
 
     def g_select(self, a, n):
         return EMPTY
+
+
+# --------------------------------------------------------------------------
+# Printing / PDF helpers
+# --------------------------------------------------------------------------
+_PRINT_NAMES = ["from", "to", "copies", "preview", "activeprinter", "printtofile", "collate",
+                "prtofilename", "ignoreprintareas"]
+_PDF_NAMES = ["type", "filename", "quality", "includedocproperties", "ignoreprintareas",
+              "from", "to", "openafterpublish", "fixedformatextclassptr"]
+
+
+def _print_out(rt, sheet, rect, args, named, preview=None):
+    v = dict(zip(_PRINT_NAMES, bind(args, named, _PRINT_NAMES)))
+    copies = 1 if v["copies"] is MISSING else index_int(v["copies"])
+    pv = preview if preview is not None else (v["preview"] is not MISSING and to_bool(v["preview"]))
+    rt.print_area(sheet, rect, pv, copies)
+    return EMPTY
+
+
+def _print_preview(rt, sheet, rect):
+    rt.print_area(sheet, rect, True, 1)
+    return EMPTY
+
+
+def _export_pdf(rt, sheet, rect, args, named):
+    v = dict(zip(_PDF_NAMES, bind(args, named, _PDF_NAMES)))
+    if v["type"] is not MISSING and index_int(v["type"]) != 0:
+        raise VBARuntimeErr(5, "Only PDF export (xlTypePDF) is supported")
+    if v["filename"] is MISSING:
+        name = (rt.book.path or "Book1").rsplit(".", 1)[0] + ".pdf"
+    else:
+        name = to_str(v["filename"])
+        if not name.lower().endswith(".pdf"):
+            name += ".pdf"
+    rt.export_pdf(sheet, rect, rt.resolve_path(name))
+    return EMPTY
+
+
+def _sheet_print_rect(rt, sheet):
+    for k, val in rt.book.defined_names.items():
+        kl = k.lower()
+        if kl.endswith("print_area") and (kl.startswith(sheet.name.lower() + "!")
+                                          or kl.startswith("'" + sheet.name.lower() + "'!")):
+            try:
+                r = rt.range_from_address(val.lstrip("="), sheet)
+                return (r.r1, r.c1, r.r2, r.c2)
+            except VBARuntimeErr:
+                pass
+    cells = sheet.cells
+    if not cells:
+        return (0, 0, 0, 0)
+    rs = [k[0] for k in cells]
+    cs = [k[1] for k in cells]
+    return (min(rs), min(cs), max(rs), max(cs))
+
+
+class DialogObj(VBAObject):
+    vba_typename = "Dialog"
+
+    def __init__(self, rt, n):
+        self.rt = rt
+        self.n = n
+
+    def g_show(self, args, named):
+        h = self.rt.host
+        if self.n == 9:
+            f = getattr(h, "printer_setup", None)
+            return bool(f()) if f else False
+        if self.n == 8:
+            sh = self.rt.book.active
+            self.rt.print_area(sh, _sheet_print_rect(self.rt, sh), False, 1)
+            return True
+        if self.n == 5:
+            f = getattr(h, "get_save_filename", None)
+            r = f() if f else None
+            if r:
+                self.rt.workbook.g_saveas([r], {})
+                return True
+            return False
+        if self.n == 1:
+            raise VBARuntimeErr(1004, "Workbooks.Open is not supported yet")
+        return False

@@ -110,6 +110,15 @@ CONSTANTS = {
     "xlvertical": -4166, "xlclipboardformattext": 0, "xlvalidatelist": 3,
     "xlvalidalertstop": 1, "xlbetween": 1, "xlequal": 3, "xlgreater": 5, "xlless": 6,
     "xlcellvalue": 1, "xlexpression": 2,
+    "xltypepdf": 0, "xltypexps": 1, "xlqualitystandard": 0, "xlqualityminimum": 1,
+    "xldialogprintersetup": 9, "xldialogprint": 8, "xldialogsaveas": 5,
+    "fmmultiselectsingle": 0, "fmmultiselectmulti": 1, "fmmultiselectextended": 2,
+    "fmscrollbarsnone": 0, "fmscrollbarshorizontal": 1, "fmscrollbarsvertical": 2,
+    "fmscrollbarsboth": 3, "fmspecialeffectflat": 0, "fmspecialeffectraised": 1,
+    "fmspecialeffectsunken": 2, "fmbackstyletransparent": 0, "fmbackstyleopaque": 1,
+    "fmtextalignleft": 1, "fmtextaligncenter": 2, "fmtextalignright": 3,
+    "fmborderstylenone": 0, "fmborderstylesingle": 1, "vbmodeless": 0, "vbmodal": 1,
+    "vbformcontrolmenu": 0, "vbformcode": 1, "vbappwindows": 2, "vbapptaskmanager": 3,
     "msotrue": -1, "msofalse": 0, "msofiledialogfolderpicker": 4, "msofiledialogfilepicker": 3,
 }
 

@@ -97,6 +97,30 @@ class SheetOpsMixin:
                 pass
         self.host_refresh_soft()
 
+    def print_area(self, sheet, rect, preview, copies):
+        h = getattr(self.host, "print_range", None)
+        if h is None:
+            raise VBARuntimeErr(1004, "Printing needs the PortableExcel window")
+        r1, c1, r2, c2 = rect
+        h(sheet, r1, c1, r2, c2, preview=bool(preview), copies=int(copies))
+
+    def export_pdf(self, sheet, rect, path):
+        h = getattr(self.host, "export_pdf", None)
+        if h is None:
+            raise VBARuntimeErr(1004, "PDF export needs the PortableExcel window")
+        r1, c1, r2, c2 = rect
+        h(sheet, r1, c1, r2, c2, path)
+
+    def save_copy_as(self, path):
+        from .. import fileio
+        old = self.book.path
+        try:
+            fileio.save_workbook(self.book, path, self.engine)
+        except Exception as e:
+            raise VBARuntimeErr(1004, f"SaveCopyAs failed: {e}")
+        finally:
+            self.book.path = old
+
     def save_workbook(self):
         h = getattr(self.host, "save_workbook", None)
         if h is not None:

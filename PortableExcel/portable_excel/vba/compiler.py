@@ -127,6 +127,8 @@ def execute(rt, proc, f):
                     raise
                 raise e from None
             rt.err.set_from(e, rt.project_name, f.erl)
+            if rt.trap_hook is not None:
+                rt.trap_hook(proc, lines[pc] if pc < n else 0, e)
             if mode is RESUME_NEXT:
                 pc += 1
             else:

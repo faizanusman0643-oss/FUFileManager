@@ -594,6 +594,61 @@ class ControlObj(VBAObject):
     def g_font(self, a, n):
         return FontProxy(self)
 
+    def g_insidewidth(self, a, n):
+        return max(0.0, float(self.d.get("width") or 0) - 4)
+
+    def g_insideheight(self, a, n):
+        cap = 10 if self.ctype == "Frame" and self.d.get("caption") else 0
+        return max(0.0, float(self.d.get("height") or 0) - 4 - cap)
+
+    def g_scrollheight(self, a, n):
+        return float(self.d.get("scroll_height", 0))
+
+    def s_scrollheight(self, a, n, v):
+        self.set_key("scroll_height", float(to_double(v)))
+
+    def g_scrollwidth(self, a, n):
+        return float(self.d.get("scroll_width", 0))
+
+    def s_scrollwidth(self, a, n, v):
+        self.set_key("scroll_width", float(to_double(v)))
+
+    def g_scrolltop(self, a, n):
+        return float(self.d.get("scroll_top", 0))
+
+    def s_scrolltop(self, a, n, v):
+        self.set_key("scroll_top", float(to_double(v)))
+
+    def g_scrollleft(self, a, n):
+        return float(self.d.get("scroll_left", 0))
+
+    def s_scrollleft(self, a, n, v):
+        self.set_key("scroll_left", float(to_double(v)))
+
+    def g_scrollbars(self, a, n):
+        return int(self.d.get("scroll_bars", 0) or 0)
+
+    def s_scrollbars(self, a, n, v):
+        self.set_key("scroll_bars", index_int(v))
+
+    def g_specialeffect(self, a, n):
+        return int(self.d.get("special_effect", 0))
+
+    def s_specialeffect(self, a, n, v):
+        self.set_key("special_effect", index_int(v))
+
+    def g_borderstyle(self, a, n):
+        return int(self.d.get("border_style", 0))
+
+    def s_borderstyle(self, a, n, v):
+        self.set_key("border_style", index_int(v))
+
+    def g_bordercolor(self, a, n):
+        return _from_hex(self.d.get("border_color"), 0)
+
+    def s_bordercolor(self, a, n, v):
+        self.set_key("border_color", _to_hex(v))
+
     def g_parent(self, a, n):
         p = self.d.get("parent")
         if p:
@@ -915,6 +970,9 @@ class FormInstance(VBAObject):
         if getattr(module, "we_vars", None):
             rt.we_holders.add(self)
         self.view = None
+        self.hwnd = 0
+        self.window_flags = None
+        self.window_state = "normal"
         self.loaded = True
         self.visible = False
         self.is_default = default
@@ -1172,6 +1230,7 @@ class FormInstance(VBAObject):
                 e.fatal = True
                 raise e
             self.view = factory(self)
+            self.apply_window()
         self.visible = True
         self.form["visible"] = True
         self.dispatch(None, "Activate", [], nested=True)
@@ -1184,6 +1243,21 @@ class FormInstance(VBAObject):
             rt.modal_depth -= modal
         if rt.end_pending:
             raise VBAEnd()
+
+    def apply_window(self):
+        v = self.view
+        if v is None:
+            return
+        if self.window_flags is not None and hasattr(v, "set_window_flags"):
+            v.set_window_flags(**self.window_flags)
+        if self.window_state != "normal" and hasattr(v, "set_window_state"):
+            v.set_window_state(self.window_state)
+
+    def set_window_state(self, state):
+        self.window_state = state
+        v = self.view
+        if v is not None and hasattr(v, "set_window_state"):
+            v.set_window_state(state)
 
     def hide(self):
         self.visible = False
@@ -1306,8 +1380,18 @@ class FormInstance(VBAObject):
     g_height, s_height = _num("height")
     g_left, s_left = _num("left")
     g_top, s_top = _num("top")
-    g_insidewidth = lambda self, a, n: max(0.0, float(self.form.get("width") or 0) - 4)  # noqa: E731
-    g_insideheight = lambda self, a, n: max(0.0, float(self.form.get("height") or 0) - 22)  # noqa: E731
+    def g_insidewidth(self, a, n):
+        v = self.form.get("inside_width")
+        if v is not None:
+            return float(v)
+        return max(0.0, float(self.form.get("width") or 0) - 4)
+
+    def g_insideheight(self, a, n):
+        v = self.form.get("inside_height")
+        if v is not None:
+            return float(v)
+        caption = (self.window_flags or {}).get("caption", True)
+        return max(0.0, float(self.form.get("height") or 0) - (22 if caption else 4))
 
     def g_backcolor(self, a, n):
         return _from_hex(self.form.get("back_color"), 0x8000000F)

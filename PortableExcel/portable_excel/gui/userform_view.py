@@ -471,6 +471,15 @@ class FormRenderer(QObject):
             w.setAutoFillBackground(t in ("Label", "Frame", "CheckBox", "OptionButton",
                                           "Image"))
         w.setPalette(pal)
+        if t in ("CommandButton", "ToggleButton") and (fg or bg):
+            # the app style sheet styles QPushButton, so colours need a sheet too
+            css = "QPushButton{border:1px solid #8A8A8A; padding:2px;"
+            if bg:
+                css += f"background:{bg.name()};"
+            if fg:
+                css += f"color:{fg.name()};"
+            css += "} QPushButton:checked{border:2px inset #555;}"
+            w.setStyleSheet(css)
         caption = str(c.get("caption") or "")
         align = {1: Qt.AlignLeft, 2: Qt.AlignHCenter, 3: Qt.AlignRight}.get(
             int(c.get("text_align") or 1), Qt.AlignLeft)

@@ -355,6 +355,7 @@ class VBARuntime(SheetOpsMixin, FileIOMixin):
         self.event_depth = 0
         self.running = 0
         self.udf_depth = 0
+        self.trap_hook = None      # debugging: fn(proc, line, err) for trapped errors
         from .apiemu import ApiEmulator
         self.api = ApiEmulator(self)
         self.addressof_procs = {}
@@ -635,6 +636,9 @@ class VBARuntime(SheetOpsMixin, FileIOMixin):
             return RegExpObj()
         if short == "filesystemobject":
             return FSO(self)
+        if short == "dataobject":
+            from .objects import DataObj
+            return DataObj(self)
         raise VBARuntimeErr(429, f"ActiveX component can't create object ({cls})")
 
     def create_com(self, progid):
@@ -643,6 +647,10 @@ class VBARuntime(SheetOpsMixin, FileIOMixin):
             return Dictionary()
         if p == "scripting.filesystemobject":
             return FSO(self)
+        if p in ("new:{1c3b4210-f441-11ce-b9ea-00aa006b1a69}", "forms.dataobject",
+                 "msforms.dataobject", "{1c3b4210-f441-11ce-b9ea-00aa006b1a69}"):
+            from .objects import DataObj
+            return DataObj(self)
         if p in ("vbscript.regexp",):
             return RegExpObj()
         if p in ("excel.application",):
