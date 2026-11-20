@@ -25,8 +25,16 @@ Ya phir **Actions → "Build PortableExcel (Windows .exe)"** ke aakhri run mein 
   - Events chalte hain: Workbook_Open, Worksheet_Change, BeforeSave waghera.
   - Sub/Function, loops, Select Case, With, On Error, arrays, Dictionary, Collection, class modules, Range/Cells/Worksheets, WorksheetFunction, MsgBox/InputBox, file I/O.
 
+- **UserForms:** `.xlsm` ke forms chalte hain (code se banaye gaye controls, `WithEvents` bhi). VBA Editor mein drag-and-drop form designer hai.
+- **Barcodes:** Insert → Barcode / Generate Barcodes (Code 128, ISBT 128, EAN-13, UPC-A, ITF, QR). Barcodes cell se linked rehte hain aur Excel file mein save hote hain.
+- **Barcode fonts:** IDAutomation / Code 128 / Libre Barcode font wale cells bina font install kiye bhi bars dikhate hain. Libre Barcode fonts exe ke andar hain.
+- **Formulas mein VBA functions:** jaise `=Code128(A1)`.
+- **Print aur PDF:** Ctrl+P, Print Preview, Export PDF; macros se `PrintOut` / `ExportAsFixedFormat` bhi.
+- **Windows API:** form resize/maximize aur mouse wheel wale aam API calls emulate hote hain.
+
 ## Limitations (abhi nahi hai)
-- UserForms, ActiveX controls, Windows API (`Declare`) calls, charts, borders, merged cells, comments, conditional formatting.
+- `Workbooks.Open` (doosri workbook kholna), ActiveX controls, aur aam emulation ke ilawa Windows API calls.
+- Charts, borders, merged cells, comments, conditional formatting.
 - PortableExcel mein edit kiye gaye macros sirf PortableExcel mein chalte hain. Asal Excel us file mein purane macros hi chalayega.
 
 ## Developers ke liye

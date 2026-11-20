@@ -59,6 +59,18 @@ def test_decoder_roundtrip():
     assert sum(bf.module_runs(bf.decode(enc))) == 9 * 11 + 13
 
 
+@pytest.mark.parametrize("codes", [
+    [209, 61, 37, 204, 94, 32, 102, 211],                          # Grandzebu
+    [11704, 11061, 11037, 11199, 12094, 12194, 11602, 11706],      # IDAutomation RT 6
+    [204, 61, 37, 199, 94, 194, 102, 206],                         # IDAutomation / Libre
+])
+def test_decoder_three_mappings(codes):
+    vals = bf.decode("".join(chr(c) for c in codes))
+    assert vals == [104, 29, 5, 99, 62, 0, 70, 106]
+    assert bf.is_valid_symbol(vals)
+    assert bf.human_text(vals) == "=%6200"
+
+
 def test_font_detection_and_paint(app):
     assert bf.is_barcode_font("Code 128")
     assert bf.is_barcode_font("IDAutomationSC128XS DEMO")
@@ -181,6 +193,32 @@ def test_wheel_scrolls_scrollbar(app):
     v.close()
 
 
+def test_runtime_wheel_hook_takes_precedence(app):
+    f = forms.new_form()
+    f["controls"] = [forms.new_control("ScrollBar", "vScroll", left=200, top=6, height=120,
+                                       max=100)]
+    inst = Inst(f)
+
+    class RT:
+        def __init__(self):
+            self.calls = []
+            self.handle = True
+
+        def mouse_wheel(self, delta, x, y, instance):
+            self.calls.append((delta, instance))
+            return self.handle
+    inst.rt = RT()
+    v = QtFormView(inst)
+    inst.view = v
+    v.show(False)
+    _wheel(v.renderer.widgets["vScroll"], -120)
+    assert inst.rt.calls == [(-120, inst)] and inst.form["controls"][0]["value"] == 0
+    inst.rt.handle = False
+    _wheel(v.renderer.widgets["vScroll"], -120)
+    assert inst.form["controls"][0]["value"] == 3
+    v.close()
+
+
 def test_window_state_and_resize_event(app):
     inst = Inst(forms.new_form())
     v = QtFormView(inst)
@@ -192,9 +230,27 @@ def test_window_state_and_resize_event(app):
     v.resize(v.width() + 100, v.height() + 40)
     QApplication.processEvents()
     assert inst.form["width"] > w0
-    assert ("fire", None, "Resize") in inst.calls
+    sets = [c[2] for c in inst.calls if c[0] == "set" and c[1] is None]
+    assert sets[:4] == ["width", "height", "inside_width", "inside_height"]
+    assert inst.calls.index(("fire", None, "Resize")) > \
+        inst.calls.index(("set", None, "inside_height", inst.form["inside_height"]))
     v.set_window_state("maximized")
     assert v.windowState() & Qt.WindowMaximized
     v.set_window_state("normal")
     assert not (v.windowState() & Qt.WindowMaximized)
+    v.close()
+
+
+def test_ampersand_is_literal_in_captions(app):
+    from portable_excel.gui.userform_view import qt_text
+    assert qt_text("Clear A & D") == "Clear A && D"
+    assert qt_text("Save", "S") == "&Save"
+    f = forms.new_form()
+    f["controls"] = [forms.new_control("CommandButton", "B", caption="A & D"),
+                     forms.new_control("Label", "L", caption="X & Y")]
+    inst = Inst(f)
+    v = QtFormView(inst)
+    inst.view = v
+    assert v.renderer.widgets["B"].text() == "A && D"
+    assert v.renderer.widgets["L"].text() == "X & Y"
     v.close()

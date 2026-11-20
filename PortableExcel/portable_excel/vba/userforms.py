@@ -194,6 +194,9 @@ class ControlsColl(VBAObject):
         if self.inst.find_ctrl(nm) is not None:
             raise VBARuntimeErr(-2147024809, "Ambiguous name")
         d = new_control(ctype, nm)
+        # Controls created at run time start with an empty caption (only the
+        # designer sets Caption = Name)
+        d["caption"] = ""
         if self.container is not None:
             d["parent"] = self.container
         if visible is not MISSING:

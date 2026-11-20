@@ -100,6 +100,19 @@ def make_font(form: dict, ctrl: Optional[dict] = None) -> QFont:
     return f
 
 
+def qt_text(caption, accelerator=None) -> str:
+    """MSForms caption -> Qt text: '&' is literal in MSForms (the Accelerator
+    property marks the access key), but a mnemonic marker in Qt."""
+    text = "" if caption is None else str(caption)
+    text = text.replace("&", "&&")
+    acc = str(accelerator or "")[:1]
+    if acc:
+        i = text.lower().find(acc.lower())
+        if i >= 0:
+            text = text[:i] + "&" + text[i:]
+    return text
+
+
 def list_rows(ctrl: dict) -> List[List[str]]:
     rows = []
     for it in ctrl.get("list") or []:
@@ -383,7 +396,7 @@ class FormRenderer(QObject):
             for p in c.get("pages") or []:
                 page = QWidget()
                 page.setAutoFillBackground(True)
-                w.addTab(page, str(p.get("caption", p.get("name", ""))))
+                w.addTab(page, qt_text(p.get("caption", p.get("name", ""))))
                 pname = p.get("name") or f"Page{w.count()}"
                 self.containers[pname] = page
                 self.page_owner[pname] = name
@@ -392,7 +405,7 @@ class FormRenderer(QObject):
             w = QTabBar(parent)
             w.setDrawBase(True)
             for tb in c.get("tabs") or []:
-                w.addTab(str(tb.get("caption", tb.get("name", ""))))
+                w.addTab(qt_text(tb.get("caption", tb.get("name", ""))))
             w.currentChanged.connect(lambda i, n=name: self._index_changed(n, i))
         elif t == "SpinButton":
             w = _SpinButton(parent, lambda step, n=name: self._spin(n, step))
@@ -471,6 +484,24 @@ class FormRenderer(QObject):
             w.setAutoFillBackground(t in ("Label", "Frame", "CheckBox", "OptionButton",
                                           "Image"))
         w.setPalette(pal)
+        # Palettes set before the first show can be reset when the application
+        # style sheet polishes the widget; widget style sheets are kept.
+        sel = {"Label": "QLabel", "CheckBox": "QCheckBox", "OptionButton": "QRadioButton",
+               "TextBox": "QPlainTextEdit" if isinstance(w, QPlainTextEdit) else "QLineEdit",
+               "ComboBox": "QComboBox",
+               "ListBox": "QTreeWidget" if isinstance(w, QTreeWidget) else "QListWidget"}.get(t)
+        if sel and (fg or bg):
+            css = f"{sel}{{"
+            if fg:
+                css += f"color:{fg.name()};"
+            if bg and int(c.get("back_style", 1) or 0) != 0:
+                css += f"background-color:{bg.name()};"
+            elif t in ("Label", "CheckBox", "OptionButton"):
+                css += "background:transparent;"
+            css += "}"
+            w.setStyleSheet(css)
+        elif sel and w.styleSheet():
+            w.setStyleSheet("")
         if t in ("CommandButton", "ToggleButton") and (fg or bg):
             # the app style sheet styles QPushButton, so colours need a sheet too
             css = "QPushButton{border:1px solid #8A8A8A; padding:2px;"
@@ -485,6 +516,7 @@ class FormRenderer(QObject):
             int(c.get("text_align") or 1), Qt.AlignLeft)
         locked = _bool(c.get("locked"))
         if t == "Label":
+            w.setTextFormat(Qt.PlainText)
             w.setText(caption)
             w.setWordWrap(_bool(c.get("word_wrap")))
             w.setAlignment(align | Qt.AlignTop)
@@ -505,13 +537,13 @@ class FormRenderer(QObject):
                 ml = int(c.get("max_length") or 0)
                 w.setMaxLength(ml if ml > 0 else 32767)
         elif t in ("CommandButton", "ToggleButton"):
-            w.setText(caption.replace("&&", "\0").replace("&", "").replace("\0", "&"))
+            w.setText(qt_text(caption, c.get("accelerator")))
             if t == "CommandButton":
                 w.setDefault(_bool(c.get("default")))
             else:
                 w.setChecked(_bool(c.get("value")))
         elif t in ("CheckBox", "OptionButton"):
-            w.setText(caption)
+            w.setText(qt_text(caption, c.get("accelerator")))
             w.setChecked(_bool(c.get("value")))
         elif t == "ComboBox":
             items = ["\t".join(r) if len(r) > 1 else (r[0] if r else "")
@@ -535,7 +567,7 @@ class FormRenderer(QObject):
         elif t == "ListBox":
             self._fill_list(c, w)
         elif t == "Frame":
-            w.setTitle(caption)
+            w.setTitle(qt_text(caption))
             inner = self.containers.get(c.get("name"))
             if inner is not None:
                 top = max(12, QFontInfo(w.font()).pixelSize() + 4) if caption else 4
@@ -543,7 +575,7 @@ class FormRenderer(QObject):
         elif t == "MultiPage":
             pages = c.get("pages") or []
             for i, p in enumerate(pages[:w.count()]):
-                w.setTabText(i, str(p.get("caption", p.get("name", ""))))
+                w.setTabText(i, qt_text(p.get("caption", p.get("name", ""))))
             idx = int(c.get("value") or 0)
             if 0 <= idx < w.count():
                 w.setCurrentIndex(idx)
@@ -1030,9 +1062,13 @@ class QtFormView(QDialog):
         if abs(w_pt - float(self.form.get("width") or 0)) < 0.5 and \
                 abs(h_pt - float(self.form.get("height") or 0)) < 0.5:
             return
+        in_w = forms.px_to_points(self.client.width() or self.width())
+        in_h = forms.px_to_points(self.client.height() or self.height())
         try:
             self.instance.user_set(None, "width", w_pt)
             self.instance.user_set(None, "height", h_pt)
+            self.instance.user_set(None, "inside_width", in_w)
+            self.instance.user_set(None, "inside_height", in_h)
         except Exception as ex:
             self._report(ex)
         self.form["width"], self.form["height"] = w_pt, h_pt
@@ -1047,9 +1083,39 @@ class QtFormView(QDialog):
 
     def eventFilter(self, obj, ev):
         if ev.type() == QEvent.Wheel and isinstance(obj, QWidget):
+            local = obj.mapTo(self, ev.position().toPoint()) if obj is not self \
+                else ev.position().toPoint()
+            if self.runtime_wheel(ev.angleDelta().y(), local):
+                return True
             if self.wheel_scroll(obj, ev.angleDelta().y()):
                 return True
         return super().eventFilter(obj, ev)
+
+    def _runtime(self):
+        rt = getattr(self.instance, "rt", None)
+        if rt is None:
+            win = getattr(self.host, "win", None)
+            rt = getattr(win, "runtime", None) if win is not None else None
+        return rt
+
+    def runtime_wheel(self, delta_y: int, local: Optional[QPoint] = None) -> bool:
+        """Give VBA mouse hooks (SetWindowsHookEx emulation) the wheel first."""
+        if not delta_y:
+            return False
+        rt = self._runtime()
+        fn = getattr(rt, "mouse_wheel", None) if rt is not None else None
+        if fn is None:
+            return False
+        x = y = None
+        if local is not None:
+            # screen coordinates consistent with the runtime's form rectangle
+            x = px(self.form.get("left") or 0) + local.x()
+            y = px(self.form.get("top") or 0) + local.y()
+        try:
+            return bool(fn(int(delta_y), x, y, self.instance))
+        except Exception as e:
+            self._report(e)
+            return True
 
     def wheel_scroll(self, widget: QWidget, delta_y: int) -> bool:
         """Scroll the vertical ScrollBar under the cursor (or the form's first

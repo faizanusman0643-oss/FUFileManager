@@ -24,7 +24,9 @@ _BARCODE_FONT_RE = re.compile(r"code\s*128|idautomation.*128|libre\s*barcode\s*1
 _TEXT_VARIANT_RE = re.compile(r"\btext\b|libre\s*barcode\s*128\s*text", re.I)
 # offsets some generators add to start/stop/check characters (IDAutomation
 # ReturnType 6-9 variants)
-_HIGH_OFFSETS = (11500, 11300, 10700, 10500)
+# (ReturnType 6-9: +11500 start/stop/check, +11000 set A/B data, +12000 set C pairs)
+_HIGH_OFFSETS = (12000, 11500, 11300, 11000, 10700, 10500)
+GRANDZEBU_STARTS = (208, 209, 210)   # Start A/B/C in the Grandzebu code128 font
 
 START_A, START_B, START_C, STOP = 103, 104, 105, 106
 
@@ -89,13 +91,39 @@ def char_value(ch: str) -> Optional[int]:
     return None
 
 
+def _strip_offset(c: int) -> Optional[int]:
+    if c <= 255:
+        return c
+    for off in _HIGH_OFFSETS:
+        if 32 <= c - off <= 211:
+            return c - off
+    return None
+
+
+def grandzebu_value(c: int) -> Optional[int]:
+    """Grandzebu mapping: 32 -> 0, 33..126 -> 1..94, 200..211 -> 95..106."""
+    if c == 32 or c == 194:
+        return 0
+    if 33 <= c <= 126:
+        return c - 32
+    if 200 <= c <= 211:
+        return c - 105
+    return None
+
+
 def decode(text: str) -> List[int]:
-    vals = []
-    for ch in text or "":
-        v = char_value(ch)
-        if v is not None:
-            vals.append(v)
-    return vals
+    """Font-encoded text -> Code 128 symbol values. The mapping is chosen by the
+    start character: 208..210 = Grandzebu, otherwise IDAutomation/Libre
+    (203..205 starts, 206 stop), with IDAutomation's high offsets removed."""
+    codes = [c for c in (_strip_offset(ord(ch)) for ch in text or "") if c is not None]
+    if not codes:
+        return []
+    if codes[0] in GRANDZEBU_STARTS:
+        conv = grandzebu_value
+    else:
+        def conv(c):
+            return char_value(chr(c))
+    return [v for v in (conv(c) for c in codes) if v is not None]
 
 
 def is_valid_symbol(vals: List[int]) -> bool:
