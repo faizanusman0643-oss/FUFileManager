@@ -1535,11 +1535,25 @@ class WorkbookObj(DocMixin, VBAObject):
         return EMPTY
 
     def g_saveas(self, args, named):
-        (fn,) = bind(args, named, ["filename"], 0)[:1]
+        fn, fmt = bind(args, named, ["filename", "fileformat", "password", "writerespassword",
+                                     "readonlyrecommended", "createbackup", "accessmode",
+                                     "conflictresolution", "addtomru", "textcodepage",
+                                     "textvisuallayout", "local"])[:2]
+        if fn is MISSING:
+            self.rt.save_workbook()
+            return EMPTY
+        path = self.rt.resolve_path(to_str(fn))
+        if "." not in path.rsplit("/", 1)[-1] and fmt is not MISSING:
+            path += {51: ".xlsx", 52: ".xlsm", 6: ".csv"}.get(index_int(fmt), ".xlsx")
         h = getattr(self.rt.host, "save_workbook_as", None)
-        if h is None:
-            raise VBARuntimeErr(5, "Workbook.SaveAs is not supported in PortableExcel")
-        h(to_str(fn))
+        if h is not None:
+            h(path)
+            return EMPTY
+        from .. import fileio
+        try:
+            fileio.save_workbook(self.rt.book, path, self.rt.engine)
+        except Exception as e:
+            raise VBARuntimeErr(1004, f"SaveAs failed: {e}")
         return EMPTY
 
     def g_savecopyas(self, args, named):
@@ -2114,6 +2128,12 @@ class ApplicationObj(VBAObject):
         if index_int(fromst) == -4150:
             return r1c1_to_a1(f, 0, 0)
         return a1_to_r1c1(f, 0, 0)
+
+    def g_inchestopoints(self, args, named):
+        return to_double(args[0]) * 72.0
+
+    def g_centimeterstopoints(self, args, named):
+        return to_double(args[0]) * 72.0 / 2.54
 
     def g_max(self, args, named):
         return self.rt.call_worksheet_function("max", args, False)

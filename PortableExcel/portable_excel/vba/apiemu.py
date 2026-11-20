@@ -132,7 +132,8 @@ class ApiEmulator:
         h, idx = _i(a[0]), _i(a[1])
         if h in self.hwnds:
             self.hwnd_for(self.hwnds[h])
-        return self.styles.get((h, idx), DEFAULT_FORM_STYLE if idx == GWL_STYLE else 0)
+        v = self.styles.get((h, idx), DEFAULT_FORM_STYLE if idx == GWL_STYLE else 0)
+        return v - (1 << 32) if v >= (1 << 31) else v
 
     def f_setwindowlong(self, a):
         h, idx, val = _i(a[0]), _i(a[1]), _i(a[2])

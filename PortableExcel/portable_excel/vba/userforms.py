@@ -11,6 +11,19 @@ from .values import (VBAObject, VBAArray, EMPTY, NULL, NOTHING, MISSING, to_str,
 from .objects import bind, index_value
 
 LIST_TYPES = ("ComboBox", "ListBox")
+# MSForms properties accepted and remembered but not rendered (name -> default)
+_GENERIC_PROPS = {
+    "integralheight": True, "mousepointer": 0, "mouseicon": None, "dropbuttonstyle": 1,
+    "showdropbuttonwhen": 2, "matchentry": 1, "enterkeybehavior": False, "tabkeybehavior": False,
+    "enterfieldbehavior": 0, "dragbehavior": 0, "hideselection": True, "selectionmargin": True,
+    "integralheights": True, "listrows": 8, "listwidth": 0, "textcolumn": -1, "keepscrollbarsvisible": 3,
+    "cycle": 0, "zoom": 100, "pictureposition": 7, "picturealignment": 2, "picturetiling": False,
+    "buttonstyle": 0, "takefocusonclick": True, "wrap": False, "delay": 50, "proportionalthumb": True,
+    "helpcontextid": 0, "whatsthishelp": False, "imemode": 0, "autotab": False, "autowordselect": True,
+    "verticalscrollbarside": 0, "tabfixedheight": 0, "tabfixedwidth": 0, "tabstyle": 0,
+    "taborientation": 0, "multirow": False, "transitioneffect": 0, "transitionperiod": 0,
+    "fontname": "Tahoma", "fontsize": 8, "fontbold": False, "fontitalic": False,
+}
 CLICK_ON_CHANGE = ("ComboBox", "ListBox", "OptionButton", "CheckBox", "ToggleButton")
 BOOL_TYPES = ("CheckBox", "OptionButton", "ToggleButton")
 NUM_TYPES = ("SpinButton", "ScrollBar", "MultiPage", "TabStrip")
@@ -539,6 +552,10 @@ class ControlObj(VBAObject):
             return _from_hex(d.get("fore_color"), 0)
         if name == "rowsource":
             return d.get("row_source") or ""
+        if name in d.get("_extra", {}):
+            return d["_extra"][name]
+        if name in _GENERIC_PROPS:
+            return _GENERIC_PROPS[name]
         raise rt_error(438)
 
     def vba_let(self, name, args, named, value, is_set=False):
@@ -587,6 +604,10 @@ class ControlObj(VBAObject):
             d["row_source"] = s or None
             self.changed("row_source", d["row_source"])
             self.inst.load_row_source(self)
+            return
+        if name in _GENERIC_PROPS or name in d.get("_extra", {}):
+            v = to_value(value) if isinstance(value, VBAObject) else value
+            d.setdefault("_extra", {})[name] = v
             return
         raise rt_error(438)
 

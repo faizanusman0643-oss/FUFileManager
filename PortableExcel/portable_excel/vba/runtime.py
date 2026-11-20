@@ -406,6 +406,9 @@ class VBARuntime(SheetOpsMixin, FileIOMixin):
             except VBACompileErr as e:
                 errors.append(VBAError("Compile error: " + e.message, m.name, e.line))
         self._initialized = False
+        self._udf_cache = {}
+        if self.engine is not None and any(m.type == "standard" for m in self.module_list):
+            self.attach_udfs(self.engine)
         return errors
 
     def ensure_init(self):
