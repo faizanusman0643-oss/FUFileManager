@@ -191,6 +191,7 @@ object Notify {
         val openI = Intent(c, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
             putExtra("alert_title", title); putExtra("alert_text", text); putExtra("alert_link", link)
+            putExtra("auto_open", loud && link.isNotBlank())
         }
         val open = PendingIntent.getActivity(c, code, openI,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)

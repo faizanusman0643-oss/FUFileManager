@@ -101,6 +101,12 @@ class MainActivity : ComponentActivity() {
             alert = listOf(at, i.getStringExtra("alert_text") ?: "", i.getStringExtra("alert_link") ?: "")
             i.removeExtra("alert_title")
             if (Build.VERSION.SDK_INT >= 27) { setShowWhenLocked(true); setTurnScreenOn(true) }
+            val link = i.getStringExtra("alert_link") ?: ""
+            if (i.getBooleanExtra("auto_open", false) && link.isNotBlank()) {
+                i.removeExtra("auto_open")
+                getSystemService(android.app.NotificationManager::class.java)?.cancelAll()
+                window.decorView.postDelayed({ openUrl(this, link) }, 400)
+            }
         }
     }
 }
