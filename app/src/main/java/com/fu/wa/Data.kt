@@ -25,6 +25,12 @@ data class Workshop(
     val quizEnd: String = "",
     val notes: String = "",
     val done: Boolean = false,
+    val kind: String = "workshop",
+    val auto: Boolean = false,
+    val courseId: String = "",
+    val lmsUrl: String = "",
+    val modUrl: String = "",
+    val locked: Boolean = false,
 ) {
     val startDate: LocalDate? get() = parseDate(date)
     val lastDate: LocalDate? get() = startDate?.plusDays((days.coerceAtLeast(1) - 1).toLong())
@@ -36,6 +42,8 @@ data class Workshop(
         put("days", days); put("start", start); put("end", end); put("link", link)
         put("quizDate", quizDate); put("quizTime", quizTime); put("quizEnd", quizEnd)
         put("notes", notes); put("done", done)
+        put("kind", kind); put("auto", auto); put("courseId", courseId)
+        put("lmsUrl", lmsUrl); put("modUrl", modUrl); put("locked", locked)
     }
 
     companion object {
@@ -53,6 +61,12 @@ data class Workshop(
             quizEnd = o.optString("quizEnd"),
             notes = o.optString("notes"),
             done = o.optBoolean("done", false),
+            kind = o.optString("kind", "workshop").ifBlank { "workshop" },
+            auto = o.optBoolean("auto", false),
+            courseId = o.optString("courseId"),
+            lmsUrl = o.optString("lmsUrl"),
+            modUrl = o.optString("modUrl"),
+            locked = o.optBoolean("locked", false),
         )
     }
 }
@@ -100,6 +114,34 @@ object Store {
     fun setMinutesBefore(c: Context, v: Int) = sp(c).edit().putInt("minBefore", v).apply()
     fun dayBefore(c: Context) = sp(c).getBoolean("dayBefore", true)
     fun setDayBefore(c: Context, v: Boolean) = sp(c).edit().putBoolean("dayBefore", v).apply()
+    fun lastSync(c: Context): String = sp(c).getString("lastSync", "") ?: ""
+    fun setLastSync(c: Context, v: String) = sp(c).edit().putString("lastSync", v).apply()
+    fun courses(c: Context): List<String> =
+        (sp(c).getString("courses", "") ?: "").split(",").filter { it.isNotBlank() }
+    fun setCourses(c: Context, ids: List<String>) = sp(c).edit().putString("courses", ids.joinToString(",")).apply()
+    fun ua(c: Context): String = sp(c).getString("ua", null)
+        ?: "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Mobile Safari/537.36"
+    fun setUa(c: Context, v: String) = sp(c).edit().putString("ua", v).apply()
+    fun cookie(c: Context): String = sp(c).getString("cookie", "") ?: ""
+    fun setCookie(c: Context, v: String) = sp(c).edit().putString("cookie", v).apply()
+    fun loginOk(c: Context) = sp(c).getBoolean("loginOk", false)
+    fun setLoginOk(c: Context, v: Boolean) = sp(c).edit().putBoolean("loginOk", v).apply()
+
+    /** Applies one Set-Cookie header to the saved LMS cookie string. */
+    @Synchronized
+    fun mergeCookie(c: Context, header: String) {
+        val kv = header.substringBefore(";").trim()
+        if (!kv.contains("=")) return
+        val name = kv.substringBefore("=").trim()
+        val value = kv.substringAfter("=").trim()
+        val map = LinkedHashMap<String, String>()
+        cookie(c).split(";").map { it.trim() }.filter { it.contains("=") }.forEach {
+            map[it.substringBefore("=").trim()] = it.substringAfter("=").trim()
+        }
+        if (value.isEmpty() || value.equals("deleted", true)) map.remove(name) else map[name] = value
+        setCookie(c, map.entries.joinToString("; ") { "${it.key}=${it.value}" })
+    }
+
     fun codes(c: Context): Set<String> = sp(c).getStringSet("codes", emptySet()) ?: emptySet()
     fun setCodes(c: Context, v: Set<String>) = sp(c).edit().putStringSet("codes", v).apply()
 }
@@ -115,7 +157,7 @@ object Parse {
     }
 
     private fun mk(y: Int, m: Int, d: Int): LocalDate? = runCatching { LocalDate.of(y, m, d) }.getOrNull()
-    private fun mon(s: String): Int {
+    fun mon(s: String): Int {
         val l = s.lowercase()
         return months.indexOfFirst { l.startsWith(it) } + 1
     }

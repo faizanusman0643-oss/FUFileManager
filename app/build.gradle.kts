@@ -11,8 +11,8 @@ android {
         applicationId = "com.fu.workshopalert"
         minSdk = 26
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 2
+        versionName = "2.0"
     }
     buildTypes { release { isMinifyEnabled = false } }
     compileOptions {
@@ -31,4 +31,5 @@ dependencies {
     implementation("androidx.compose.foundation:foundation")
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-core")
+    implementation("androidx.work:work-runtime-ktx:2.9.1")
 }

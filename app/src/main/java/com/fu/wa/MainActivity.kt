@@ -38,7 +38,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.time.Duration
 import java.time.LocalDate
 import java.time.LocalDateTime
@@ -47,9 +50,16 @@ import java.time.LocalTime
 val Navy = Color(0xFF0B2545)
 val Teal = Color(0xFF13A8A0)
 
+fun fuColors() = lightColorScheme(
+    primary = Teal, onPrimary = Color.White, secondary = Navy, onSecondary = Color.White,
+    primaryContainer = Color(0xFFD7F3F1), onPrimaryContainer = Navy,
+    surface = Color.White, background = Color(0xFFF3F6F9),
+)
+
 class MainActivity : ComponentActivity() {
     private var shared by mutableStateOf<String?>(null)
     private var alert by mutableStateOf<List<String>?>(null)
+    private var resumeTick by mutableIntStateOf(0)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -59,17 +69,17 @@ class MainActivity : ComponentActivity() {
         ) requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
         Notify.ensure(this)
         Alarms.rescheduleAll(this)
+        runCatching { SyncWorker.schedule(this) }
         setContent {
-            MaterialTheme(
-                colorScheme = lightColorScheme(
-                    primary = Teal, onPrimary = Color.White, secondary = Navy, onSecondary = Color.White,
-                    primaryContainer = Color(0xFFD7F3F1), onPrimaryContainer = Navy,
-                    surface = Color.White, background = Color(0xFFF3F6F9),
-                )
-            ) {
-                App(shared, { shared = null }, alert, { alert = null })
+            MaterialTheme(colorScheme = fuColors()) {
+                App(shared, { shared = null }, alert, { alert = null }, resumeTick)
             }
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        resumeTick++
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -138,8 +148,10 @@ fun countdown(to: LocalDateTime): String {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun App(shared: String?, clearShared: () -> Unit, alert: List<String>?, clearAlert: () -> Unit) {
+fun App(shared: String?, clearShared: () -> Unit, alert: List<String>?, clearAlert: () -> Unit, resumeTick: Int) {
     val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var syncing by remember { mutableStateOf(false) }
     val clip = LocalClipboardManager.current
     var list by remember { mutableStateOf(Store.load(ctx)) }
     var editing by remember { mutableStateOf<Workshop?>(null) }
@@ -148,6 +160,7 @@ fun App(shared: String?, clearShared: () -> Unit, alert: List<String>?, clearAle
     var tick by remember { mutableLongStateOf(0L) }
 
     LaunchedEffect(Unit) { while (true) { delay(30_000); tick++ } }
+    LaunchedEffect(resumeTick) { list = Store.load(ctx); tick++ }
     LaunchedEffect(shared) {
         if (shared != null) { editing = Parse.toWorkshop(shared); clearShared() }
     }
@@ -193,6 +206,24 @@ fun App(shared: String?, clearShared: () -> Unit, alert: List<String>?, clearAle
                     }, Modifier.weight(1f)) { Text("Paste SMS/Link") }
                 }
             }
+            item(key = "sync") {
+                key(tick, syncing) {
+                    SyncCard(
+                        syncing = syncing,
+                        onLogin = { ctx.startActivity(Intent(ctx, LoginActivity::class.java)) },
+                        onSync = {
+                            syncing = true
+                            scope.launch {
+                                val m = withContext(Dispatchers.IO) {
+                                    runCatching { Lms.syncAll(ctx) }.getOrElse { "Error: ${it.message}" }
+                                }
+                                syncing = false
+                                list = Store.load(ctx)
+                                Toast.makeText(ctx, m, Toast.LENGTH_LONG).show()
+                            }
+                        })
+                }
+            }
             if (list.isEmpty()) {
                 item(key = "empty") {
                     Card(Modifier.fillMaxWidth()) {
@@ -207,6 +238,7 @@ fun App(shared: String?, clearShared: () -> Unit, alert: List<String>?, clearAle
             items(list, key = { it.id }) { w ->
                 WorkshopCard(w,
                     onJoin = { openUrl(ctx, w.link) },
+                    onLms = { openUrl(ctx, w.lmsUrl.ifBlank { AAGHI }) },
                     onEdit = { editing = w },
                     onDelete = { deleting = w },
                     onDone = { commit(list.map { if (it.id == w.id) it.copy(done = !it.done) else it }) })
@@ -248,12 +280,18 @@ fun App(shared: String?, clearShared: () -> Unit, alert: List<String>?, clearAle
 fun NextCard(list: List<Workshop>) {
     val ctx = LocalContext.current
     val now = LocalDateTime.now()
-    val next = sessions(list).filter { it.end.isAfter(now) }.minByOrNull { it.start }
+    val next = sessions(list.filter { it.kind != "quiz" }).filter { it.end.isAfter(now) }.minByOrNull { it.start }
     val today = LocalDate.now()
     val quizOpen = list.filter { w ->
-        val q = parseDate(w.quizDate)
-        val e = parseDate(w.quizEnd) ?: w.lastDate
-        !w.done && q != null && !today.isBefore(q) && (e == null || !today.isAfter(e))
+        if (w.kind == "quiz") {
+            val o = w.startDate
+            val e = parseDate(w.quizDate)
+            !w.done && o != null && !today.isBefore(o) && (e == null || !today.isAfter(e))
+        } else {
+            val q = parseDate(w.quizDate)
+            val e = parseDate(w.quizEnd) ?: w.lastDate
+            !w.done && q != null && !today.isBefore(q) && (e == null || !today.isAfter(e))
+        }
     }
     Card(
         Modifier.fillMaxWidth(),
@@ -273,16 +311,23 @@ fun NextCard(list: List<Workshop>) {
                 Spacer(Modifier.height(6.dp))
                 Text(if (live) "🔴 Abhi chal raha hai" else "⏰ " + countdown(next.start),
                     color = Color(0xFFB8F0EC), fontWeight = FontWeight.SemiBold)
+                Spacer(Modifier.height(10.dp))
                 if (next.w.link.isNotBlank()) {
-                    Spacer(Modifier.height(10.dp))
                     Button(onClick = { openUrl(ctx, next.w.link) },
                         colors = ButtonDefaults.buttonColors(containerColor = Teal)) { Text("Join Teams") }
+                } else {
+                    Text(if (next.w.auto) "🔒 Teams link abhi lock hai — khulte hi notification aayegi" else "Teams link abhi nahi",
+                        fontSize = 13.sp, color = Color(0xFFB8F0EC))
+                    if (next.w.lmsUrl.isNotBlank()) {
+                        Spacer(Modifier.height(6.dp))
+                        OutlinedButton(onClick = { openUrl(ctx, next.w.lmsUrl) }) { Text("LMS course kholein", color = Color.White) }
+                    }
                 }
             }
             if (quizOpen.isNotEmpty()) {
                 Spacer(Modifier.height(12.dp))
                 Box(Modifier.fillMaxWidth().background(Color(0xFF1C3D66), RoundedCornerShape(10.dp)).padding(10.dp)) {
-                    Text("📝 Quiz open: " + quizOpen.joinToString(", ") { it.label })
+                    Text("📝 Quiz open: " + quizOpen.joinToString(", ") { if (it.kind == "quiz") it.course else it.label })
                 }
             }
         }
@@ -290,24 +335,39 @@ fun NextCard(list: List<Workshop>) {
 }
 
 @Composable
-fun WorkshopCard(w: Workshop, onJoin: () -> Unit, onEdit: () -> Unit, onDelete: () -> Unit, onDone: () -> Unit) {
+fun WorkshopCard(w: Workshop, onJoin: () -> Unit, onLms: () -> Unit, onEdit: () -> Unit, onDelete: () -> Unit, onDone: () -> Unit) {
     val d0 = w.startDate
-    val past = w.lastDate?.isBefore(LocalDate.now()) == true
+    val quiz = w.kind == "quiz"
+    val past = if (quiz) (parseDate(w.quizDate) ?: d0)?.isBefore(LocalDate.now()) == true
+        else w.lastDate?.isBefore(LocalDate.now()) == true
     Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp),
         colors = CardDefaults.cardColors(containerColor = if (w.done || past) Color(0xFFE9EDF1) else Color.White)) {
         Column(Modifier.padding(14.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
-                    Text(w.label, fontWeight = FontWeight.Bold, fontSize = 17.sp, color = Navy)
-                    val range = if (w.days > 1) "${fmtDate(d0)} → ${fmtDate(w.lastDate)} (${w.days} din)" else fmtDate(d0)
-                    Text(range, fontSize = 14.sp)
-                    val tm = fmtTime(parseTime(w.start)) + (parseTime(w.end)?.let { " – " + fmtTime(it) } ?: "")
-                    Text("🕒 $tm", fontSize = 14.sp)
-                    parseDate(w.quizDate)?.let { q ->
-                        Text("📝 Quiz: ${fmtDate(q)} ${fmtTime(parseTime(w.quizTime))}" +
-                            (parseDate(w.quizEnd)?.let { " → ${fmtDate(it)}" } ?: ""),
-                            fontSize = 14.sp, color = Color(0xFF0E7C76))
+                    if (quiz) {
+                        Text("📝 " + w.course, fontWeight = FontWeight.Bold, fontSize = 17.sp, color = Navy)
+                        Text(w.title, fontSize = 14.sp)
+                        Text("Khulega: ${fmtDate(d0)} ${fmtTime(parseTime(w.start))}", fontSize = 14.sp, color = Color(0xFF0E7C76))
+                        parseDate(w.quizDate)?.let {
+                            Text("Band: ${fmtDate(it)} ${fmtTime(parseTime(w.quizTime))}", fontSize = 14.sp, color = Color(0xFFC62828))
+                        }
+                    } else {
+                        Text(w.label, fontWeight = FontWeight.Bold, fontSize = 17.sp, color = Navy)
+                        val range = if (w.days > 1) "${fmtDate(d0)} → ${fmtDate(w.lastDate)} (${w.days} din)" else fmtDate(d0)
+                        Text(range, fontSize = 14.sp)
+                        val tm = fmtTime(parseTime(w.start)) + (parseTime(w.end)?.let { " – " + fmtTime(it) } ?: "")
+                        Text("🕒 $tm", fontSize = 14.sp)
+                        parseDate(w.quizDate)?.let { q ->
+                            Text("📝 Quiz: ${fmtDate(q)} ${fmtTime(parseTime(w.quizTime))}" +
+                                (parseDate(w.quizEnd)?.let { " → ${fmtDate(it)}" } ?: ""),
+                                fontSize = 14.sp, color = Color(0xFF0E7C76))
+                        }
+                        if (w.link.isBlank() && w.auto && !past) {
+                            Text("🔒 Teams link ${fmtTime(parseTime(w.start))} par khulega", fontSize = 13.sp, color = Color(0xFF8A6D00))
+                        }
                     }
+                    if (w.auto) Text("AIOU LMS se sync", fontSize = 11.sp, color = Color.Gray)
                     if (w.done) Text("✔ Mukammal", fontSize = 13.sp, color = Color(0xFF2E7D32))
                 }
                 IconButton(onClick = onEdit) { Icon(Icons.Default.Edit, "Edit", tint = Navy) }
@@ -317,7 +377,36 @@ fun WorkshopCard(w: Workshop, onJoin: () -> Unit, onEdit: () -> Unit, onDelete: 
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 if (w.link.isNotBlank()) Button(onClick = onJoin,
                     colors = ButtonDefaults.buttonColors(containerColor = Teal)) { Text("Join") }
+                if (w.lmsUrl.isNotBlank()) OutlinedButton(onClick = onLms) { Text("LMS") }
                 OutlinedButton(onClick = onDone) { Text(if (w.done) "Wapas active" else "Done") }
+            }
+        }
+    }
+}
+
+@Composable
+fun SyncCard(syncing: Boolean, onLogin: () -> Unit, onSync: () -> Unit) {
+    val ctx = LocalContext.current
+    val courses = Store.courses(ctx)
+    val last = Store.lastSync(ctx)
+    val ok = Store.loginOk(ctx) && courses.isNotEmpty()
+    Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp),
+        colors = CardDefaults.cardColors(containerColor = Color(0xFFD7F3F1))) {
+        Column(Modifier.padding(14.dp)) {
+            Text("AIOU LMS Auto-Sync", fontWeight = FontWeight.Bold, color = Navy)
+            Text(
+                if (courses.isEmpty()) "Ek baar AIOU login karein — saare courses, workshops, time aur Teams links khud aa jayenge."
+                else (if (ok) "✔ ${courses.size} courses connected · har ghante check" else "⚠ Login dobara karein") +
+                    (if (last.isNotBlank()) "\nLast: $last" else ""),
+                fontSize = 13.sp, color = Navy)
+            Spacer(Modifier.height(8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = onLogin, colors = ButtonDefaults.buttonColors(containerColor = Navy)) {
+                    Text(if (courses.isEmpty() || !ok) "AIOU Login" else "Login / Courses")
+                }
+                if (courses.isNotEmpty()) OutlinedButton(onClick = onSync, enabled = !syncing) {
+                    Text(if (syncing) "Sync…" else "Sync now")
+                }
             }
         }
     }

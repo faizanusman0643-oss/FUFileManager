@@ -28,6 +28,9 @@ data class Spec(
     val text: String,
     val link: String,
     val loud: Boolean,
+    val wid: Long = 0L,
+    val courseId: String = "",
+    val check: Boolean = false,
 )
 
 object Alarms {
@@ -43,30 +46,52 @@ object Alarms {
             val d0 = w.startDate ?: continue
             val st = parseTime(w.start) ?: LocalTime.of(10, 0)
             val name = w.label
+            val openLink = w.link.ifBlank { w.lmsUrl }
 
-            fun add(key: String, dt: LocalDateTime, title: String, text: String, link: String, loud: Boolean) {
+            fun add(key: String, dt: LocalDateTime, title: String, text: String, link: String, loud: Boolean,
+                    check: Boolean = false) {
                 val ms = dt.atZone(ZoneId.systemDefault()).toInstant().toEpochMilli()
                 if (ms > now) {
                     val code = ("${w.id}|$key").hashCode() and 0x7fffffff
-                    out += Spec(code, ms, title, text, link, loud)
+                    out += Spec(code, ms, title, text, link, loud, w.id, w.courseId, check)
                 }
+            }
+
+            if (w.kind == "quiz") {
+                add("q", d0.atTime(st), "Quiz khul gaya", "${w.course} — ${w.title}",
+                    w.lmsUrl.ifBlank { AAGHI }, true)
+                val cd = parseDate(w.quizDate)
+                if (cd != null) {
+                    val ct = parseTime(w.quizTime) ?: LocalTime.of(23, 59)
+                    val close = cd.atTime(ct)
+                    val warn = if (ct.isAfter(LocalTime.of(12, 0))) cd.atTime(9, 0) else close.minusHours(3)
+                    add("qe", warn, "Quiz aaj band hoga", "${w.course} — ${w.title}: ${fmtTime(ct)} tak attempt karein",
+                        w.lmsUrl.ifBlank { AAGHI }, true)
+                }
+                continue
             }
 
             if (dayBefore) {
                 add("db", d0.minusDays(1).atTime(20, 0), "Kal workshop hai",
-                    "$name — ${fmtDate(d0)}, ${fmtTime(st)}", w.link, false)
+                    "$name — ${fmtDate(d0)}, ${fmtTime(st)}", openLink, false)
             }
             for (i in 0 until w.days.coerceIn(1, 30)) {
                 val d = d0.plusDays(i.toLong())
                 val dayTxt = if (w.days > 1) " (Day ${i + 1})" else ""
                 if (st.isAfter(LocalTime.of(8, 30))) {
                     add("m$i", d.atTime(8, 0), "Aaj workshop hai$dayTxt",
-                        "$name — ${fmtTime(st)} baje", w.link, false)
+                        "$name — ${fmtTime(st)} baje", openLink, false)
                 }
                 add("b$i", d.atTime(st).minusMinutes(minB.toLong()), "$minB min mein workshop$dayTxt",
-                    "$name — Teams join karne ke liye tayyar ho jayein", w.link, true)
+                    "$name — Teams join karne ke liye tayyar ho jayein", openLink, true)
                 add("s$i", d.atTime(st), "Workshop shuru$dayTxt",
-                    "$name — abhi Join karein", w.link, true)
+                    "$name — abhi Join karein", openLink, true)
+                if (w.auto) {
+                    listOf(60L, 20L, 5L).forEach { m ->
+                        add("c$i-$m", d.atTime(st).minusMinutes(m), "", "", "", false, check = true)
+                    }
+                    add("c$i+2", d.atTime(st).plusMinutes(2), "", "", "", false, check = true)
+                }
             }
             val qd = parseDate(w.quizDate)
             if (qd != null) {
@@ -98,11 +123,14 @@ object Alarms {
         val i = intent(c, s.code).apply {
             putExtra("title", s.title); putExtra("text", s.text)
             putExtra("link", s.link); putExtra("code", s.code); putExtra("loud", s.loud)
+            putExtra("wid", s.wid); putExtra("courseId", s.courseId); putExtra("check", s.check)
         }
         val pi = PendingIntent.getBroadcast(c, s.code, i,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
         try {
-            if (canExact(c)) {
+            if (s.check && canExact(c)) {
+                am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, s.at, pi)
+            } else if (canExact(c)) {
                 val show = PendingIntent.getActivity(c, 0, Intent(c, MainActivity::class.java),
                     PendingIntent.FLAG_IMMUTABLE)
                 am.setAlarmClock(AlarmManager.AlarmClockInfo(s.at, show), pi)
@@ -193,14 +221,34 @@ object Notify {
 
 class AlertReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
-        Notify.show(
-            context,
-            intent.getStringExtra("title") ?: "Workshop alert",
-            intent.getStringExtra("text") ?: "",
-            intent.getStringExtra("link") ?: "",
-            intent.getIntExtra("code", 1),
-            intent.getBooleanExtra("loud", true),
-        )
+        val title = intent.getStringExtra("title") ?: "Workshop alert"
+        val text = intent.getStringExtra("text") ?: ""
+        val link0 = intent.getStringExtra("link") ?: ""
+        val code = intent.getIntExtra("code", 1)
+        val loud = intent.getBooleanExtra("loud", true)
+        val check = intent.getBooleanExtra("check", false)
+        val courseId = intent.getStringExtra("courseId") ?: ""
+        val wid = intent.getLongExtra("wid", 0L)
+        val needFresh = courseId.isNotBlank() && (check || !link0.contains("teams", true))
+        if (!needFresh) {
+            Notify.show(context, title, text, link0, code, loud)
+            return
+        }
+        val pr = goAsync()
+        Thread {
+            try {
+                runCatching { Lms.syncCourses(context, listOf(courseId), notifyNew = check) }
+                if (!check) {
+                    val w = Store.load(context).firstOrNull { it.id == wid }
+                    val link = w?.link?.takeIf { it.isNotBlank() } ?: link0
+                    Notify.show(context, title, text, link, code, loud)
+                }
+            } catch (e: Exception) {
+                if (!check) Notify.show(context, title, text, link0, code, loud)
+            } finally {
+                pr.finish()
+            }
+        }.start()
     }
 }
 
