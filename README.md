@@ -15,6 +15,17 @@ hidden vault with PIN, built-in video/audio player (Media3, all formats).
 ## Android Studio se
 File > Open > is folder ko kholo > Build > Build APK(s).
 
+## WhatsApp Recovery (Tools tab)
+- "Auto backup" ON karo: WhatsApp ki har nayi photo/video/voice/document/status ki copy
+  `.FURecovery` folder mai foran ban jati hai (background service + notification).
+- WhatsApp pe koi file delete ho ("Delete for everyone" ya khud) to wo "Deleted" tab mai milegi.
+  Select > Recover = `Download/WhatsApp Recovered` mai save.
+- Dekhe hue status 24 ghante baad bhi "Status" tab mai rehte hain.
+- Backup ON karne se PEHLE delete hui files root ke baghair wapas nahi aa saktin
+  (sirf Android trash `.trashed-*` wali milti hain).
+- Backup storage leta hai: ⋮ > "Purana backup saaf karo" se 30 din+ purani copies hatao.
+- View-once media support nahi hai (WhatsApp use encrypted rakhta hai, aur bhejne wale ki privacy).
+
 ## Notes
 - Vault sirf chhupata hai (`.FUVault` folder + PIN), encrypt nahi karta.
 - Delete permanent hai (recycle bin nahi) — delete se pehle confirm aata hai.

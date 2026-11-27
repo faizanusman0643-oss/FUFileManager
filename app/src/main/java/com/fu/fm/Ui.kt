@@ -94,11 +94,12 @@ fun App(vm: VM, loader: ImageLoader, extUri: Uri?, onExtClose: () -> Unit) {
     var confirm by remember { mutableStateOf<Pair<String, () -> Unit>?>(null) }
     var visible by remember { mutableStateOf<List<String>>(emptyList()) }
     var menu by remember { mutableStateOf(false) }
+    var recovery by remember { mutableStateOf(false) }
     val snack = remember { SnackbarHostState() }
     val sel = vm.selected
 
-    LaunchedEffect(vm.message) {
-        vm.message?.let { snack.showSnackbar(it); vm.message = null }
+    LaunchedEffect(vm.message, recovery) {
+        if (!recovery) vm.message?.let { snack.showSnackbar(it); vm.message = null }
     }
     BackHandler(sel.isNotEmpty()) { sel.clear() }
 
@@ -189,37 +190,18 @@ fun App(vm: VM, loader: ImageLoader, extUri: Uri?, onExtClose: () -> Unit) {
                 when (tab) {
                     0 -> Gallery(vm, loader, { l, x -> openItem(l, x) }) { v -> visible = v }
                     1 -> Browser(vm, { l, x -> openItem(l, x) }) { v -> visible = v }
-                    2 -> Tools(vm, { t, cb -> picker = t to cb }, { m, a -> confirm = m to a })
+                    2 -> Tools(vm, { t, cb -> picker = t to cb }, { m, a -> confirm = m to a }) { recovery = true }
                     else -> VaultScreen(vm)
                 }
-                if (vm.busy) {
-                    Box(
-                        Modifier.fillMaxSize().background(Color(0x66000000))
-                            .combinedClickable(onClick = {}),
-                        Alignment.Center
-                    ) {
-                        Card(Modifier.padding(32.dp).fillMaxWidth()) {
-                            Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                                Text("Kaam ho raha hai…", fontSize = 16.sp)
-                                if (vm.progTotal > 0) {
-                                    LinearProgressIndicator(
-                                        progress = { vm.progDone.toFloat() / vm.progTotal },
-                                        modifier = Modifier.fillMaxWidth()
-                                    )
-                                    Text("${vm.progDone} / ${vm.progTotal}", fontSize = 13.sp)
-                                } else {
-                                    LinearProgressIndicator(Modifier.fillMaxWidth())
-                                }
-                                if (vm.progName.isNotEmpty()) {
-                                    Text(vm.progName, fontSize = 12.sp, color = Color.Gray, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                }
-                            }
-                        }
-                    }
-                }
+                BusyOverlay(vm)
             }
         }
 
+        if (recovery) {
+            RecoveryScreen(vm, loader, { l, x -> openItem(l, x) }, { m, a -> confirm = m to a }) {
+                recovery = false; sel.clear(); vm.refresh()
+            }
+        }
         player?.let { (l, i) ->
             PlayerScreen(l.map { Uri.fromFile(it.file) }, l.map { it.name }, i, l[i].cat == Cat.AUDIO) { player = null }
         }
@@ -378,13 +360,16 @@ fun Browser(vm: VM, open: (List<Item>, Item) -> Unit, onVisible: (List<String>) 
 }
 
 @Composable
-fun Tools(vm: VM, pick: (String, (File) -> Unit) -> Unit, confirm: (String, () -> Unit) -> Unit) {
+fun Tools(vm: VM, pick: (String, (File) -> Unit) -> Unit, confirm: (String, () -> Unit) -> Unit, openRecovery: () -> Unit) {
     var modeDir by remember { mutableStateOf<File?>(null) }
     var dupAsk by remember { mutableStateOf(false) }
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(12.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
+        ToolCard("WhatsApp Recovery", "Deleted photos/videos/status wapas lao + auto backup", Icons.Default.Restore) {
+            openRecovery()
+        }
         ToolCard("Duplicate finder", "Same file alag naam se — dhoond kar delete karo", Icons.Default.ContentCopy) {
             dupAsk = true
         }

@@ -58,7 +58,7 @@ class VM(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun op(work: () -> String) {
+    fun op(after: () -> Unit = {}, work: () -> String) {
         viewModelScope.launch {
             progDone = 0; progTotal = 0; progName = ""
             busy = true
@@ -69,6 +69,7 @@ class VM(app: Application) : AndroidViewModel(app) {
             message = r
             selected.clear()
             refresh()
+            after()
         }
     }
 
@@ -133,6 +134,49 @@ class VM(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    // ---------- WhatsApp recovery ----------
+    var recs by mutableStateOf<List<Rec>>(emptyList())
+    var waAuto by mutableStateOf(WaRecovery.enabled(app))
+
+    fun loadRecs(syncFirst: Boolean) {
+        viewModelScope.launch {
+            progDone = 0; progTotal = 0; progName = if (syncFirst) "WhatsApp backup update…" else ""
+            busy = true
+            var n = 0
+            recs = withContext(Dispatchers.IO) {
+                try { if (syncFirst) n = WaRecovery.sync(onProg); WaRecovery.list() } catch (e: Exception) { emptyList() }
+            }
+            busy = false
+            if (syncFirst && n > 0) message = "$n nayi files ka backup bana"
+        }
+    }
+
+    fun setWaAuto(on: Boolean) {
+        WaRecovery.setEnabled(ctx, on)
+        waAuto = on
+        if (on) { WaService.start(ctx); loadRecs(true) } else WaService.stop(ctx)
+    }
+
+    fun recover(paths: List<String>) {
+        val chosen = recs.filter { it.item.path in paths }
+        op({ loadRecs(false) }) {
+            val done = WaRecovery.recover(chosen, onProg)
+            Fm.rescan(ctx, done)
+            "${done.size} files 'Download/WhatsApp Recovered' mai save ho gayi"
+        }
+    }
+
+    fun deleteRecs(paths: List<String>) = op({ loadRecs(false) }) {
+        val done = Fm.deleteAll(paths.map { File(it) }, onProg)
+        Fm.deleteEmptyDirs(WaRecovery.backup)
+        "${done.size} backup files delete hui"
+    }
+
+    fun pruneRecs(days: Int) = op({ loadRecs(false) }) {
+        val (n, b) = WaRecovery.prune(days)
+        "$n purani copies hataein, ${fmtSize(b)} free"
+    }
+
     fun findDupes(fast: Boolean) {
         viewModelScope.launch {
             progDone = 0; progTotal = 0; progName = ""
@@ -152,6 +196,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         handleIntent(intent)
+        if (WaRecovery.enabled(this)) try { WaService.start(this) } catch (_: Exception) {}
         val loader = ImageLoader.Builder(this)
             .components { add(VideoFrameDecoder.Factory()) }
             .crossfade(true)
