@@ -1,0 +1,6 @@
+<resources>
+    <style name="Theme.FU" parent="Theme.AppCompat.Light.NoActionBar">
+        <item name="android:statusBarColor">#0B2545</item>
+        <item name="android:navigationBarColor">#101C28</item>
+    </style>
+</resources>

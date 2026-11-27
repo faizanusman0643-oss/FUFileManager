@@ -1,0 +1,41 @@
+name: Build FU XPlayer APK
+on:
+  push:
+    branches: [xplayer]
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.10.2
+      - name: Build debug APK
+        run: |
+          set -o pipefail
+          gradle :app:assembleDebug --no-daemon --console=plain 2>&1 | tee build.log
+      - name: Show errors
+        if: failure()
+        run: |
+          msg=$(grep -E "^e: |error:|What went wrong|Execution failed|Could not|> " build.log | head -40 | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
+          echo "::error title=BUILD_ERRORS::$msg"
+      - name: Rename APK
+        run: cp app/build/outputs/apk/debug/app-debug.apk FUXPlayer.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FUXPlayer-APK
+          path: FUXPlayer.apk
+      - name: Publish release (direct download link)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: xplayer-latest
+          target_commitish: ${{ github.sha }}
+          name: FU XPlayer (latest APK)
+          files: FUXPlayer.apk
