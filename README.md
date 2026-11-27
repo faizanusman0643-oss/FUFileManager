@@ -1,4 +1,4 @@
-# FU File Manager (Android)
+# FU File Manager Pro (Android)
 
 Gallery (photos/videos/audio/docs), file browser, batch move/copy/delete/share,
 duplicate finder, sort by format/date/month, consolidate, clean junk,

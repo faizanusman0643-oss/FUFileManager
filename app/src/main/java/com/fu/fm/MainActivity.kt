@@ -261,7 +261,7 @@ fun PermissionScreen(onGrant: () -> Unit) {
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Text("FU File Manager", style = androidx.compose.material3.MaterialTheme.typography.headlineSmall)
+        Text("FU File Manager Pro", style = androidx.compose.material3.MaterialTheme.typography.headlineSmall)
         Spacer(Modifier.height(12.dp))
         Text(
             "Sab files dikhane, move aur delete karne ke liye 'All files access' chahiye. Neeche button dabao aur is app ke liye allow kar do.",

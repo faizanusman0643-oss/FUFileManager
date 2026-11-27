@@ -162,7 +162,7 @@ fun App(vm: VM, loader: ImageLoader, extUri: Uri?, onExtClose: () -> Unit) {
                     )
                 } else {
                     TopAppBar(
-                        title = { Text("FU File Manager") },
+                        title = { Text("FU File Manager Pro") },
                         colors = TopAppBarDefaults.topAppBarColors(containerColor = Navy, titleContentColor = Color.White)
                     )
                 }
