@@ -151,7 +151,7 @@ class VM(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun setWaAuto(on: Boolean) {
+    fun toggleWaAuto(on: Boolean) {
         WaRecovery.setEnabled(ctx, on)
         waAuto = on
         if (on) { WaService.start(ctx); loadRecs(true) } else WaService.stop(ctx)

@@ -151,7 +151,7 @@ fun RecoveryScreen(
                         }
                         Switch(checked = vm.waAuto, onCheckedChange = { on ->
                             if (on && Build.VERSION.SDK_INT >= 33) notifPerm.launch(Manifest.permission.POST_NOTIFICATIONS)
-                            vm.setWaAuto(on)
+                            vm.toggleWaAuto(on)
                         })
                     }
                 }
